@@ -58,14 +58,15 @@ func _ready() -> void:
 	_build_toast()
 	Net.players_changed.connect(_refresh_lobby)
 	Net.session_closed.connect(_on_session_closed)
-	Net.lobby_joined.connect(func(): if _current == Screen.LOBBY: _show_room())
 	Net.lan_search_done.connect(_on_lan_results)
+	if not Net.last_error.is_empty():
+		_show_toast.call_deferred(Net.last_error)
+		Net.last_error = ""
 	if not Net.last_results.is_empty():
 		goto(Screen.RESULTS)
-	elif Net.session_active():
-		goto(Screen.LOBBY)
-		_show_room()
 	else:
+		if Net.session_active():
+			Net.leave()
 		goto(Screen.MAIN)
 
 func goto(screen: int) -> void:
@@ -438,16 +439,23 @@ func _on_host_pressed() -> void:
 	if not err.is_empty():
 		_show_toast(err)
 		return
-	_show_room()
+	# Sin lobby: el host entra a jugar ya, con bots hasta que lleguen amigos.
+	Net.begin_infinite()
+
+## Entrar a un server: guardar la dirección y cargar la Arena; la conexión
+## se hace desde adentro (necesario para el drop-in).
+func _join_flow(address: String) -> void:
+	address = address.strip_edges()
+	if address.is_empty():
+		_show_toast("Type a server address first.")
+		return
+	GameSettings.last_server = address
+	GameSettings.save_settings()
+	Net.pending_join = address
+	Transition.change_scene(Net.ARENA_SCENE)
 
 func _on_join_pressed() -> void:
-	var err := Net.join(_ip_edit.text)
-	if not err.is_empty():
-		_show_toast(err)
-		return
-	GameSettings.last_server = _ip_edit.text.strip_edges()
-	GameSettings.save_settings()
-	_show_toast("Connecting to %s..." % _ip_edit.text)
+	_join_flow(_ip_edit.text)
 
 func _on_search_pressed() -> void:
 	for c in _search_results.get_children():
@@ -469,10 +477,7 @@ func _on_lan_results(hosts: Array) -> void:
 		return
 	for h in hosts:
 		var b := _button("JOIN %s'S ROOM (%s)" % [String(h["name"]).to_upper(), h["ip"]], 16)
-		b.pressed.connect(func():
-			var err := Net.join(String(h["ip"]))
-			if not err.is_empty():
-				_show_toast(err))
+		b.pressed.connect(func(): _join_flow(String(h["ip"])))
 		_search_results.add_child(b)
 
 func _refresh_lobby() -> void:

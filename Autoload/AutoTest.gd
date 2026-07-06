@@ -143,8 +143,25 @@ func _run_join() -> void:
 	GameSettings.player_name = "BOT-%d" % (randi() % 100)
 	var ids := CharacterLib.get_ids()
 	GameSettings.character_id = ids[randi() % ids.size()]
-	var err := Net.join(_join_ip)
-	print("[AutoTest] join: ", "OK" if err.is_empty() else err)
+	Net.pending_join = _join_ip
+	Transition.change_scene(Net.ARENA_SCENE)
+	print("[AutoTest] join via arena: ", _join_ip)
+	# Sonda: verificar que las réplicas de otros jugadores SE MUEVEN acá.
+	await get_tree().create_timer(10.0).timeout
+	var others := get_tree().get_nodes_in_group("net_players").filter(
+		func(n): return not (n as NetPlayer).is_local())
+	if others.is_empty():
+		print("[AutoTest] REPLICA CHECK: no remote players visible!")
+		return
+	var target: NetPlayer = others[0]
+	var p1: Vector3 = target.global_position
+	await get_tree().create_timer(3.0).timeout
+	if not is_instance_valid(target):
+		print("[AutoTest] REPLICA CHECK: target respawned/freed (ok)")
+		return
+	var moved := target.global_position.distance_to(p1)
+	print("[AutoTest] REPLICA CHECK: '%s' moved %.2f m in 3s (%s)" % [
+		target.display_name, moved, "OK" if moved > 0.5 else "FROZEN!"])
 
 func _run_dedicated() -> void:
 	await get_tree().create_timer(0.5).timeout

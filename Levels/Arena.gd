@@ -39,13 +39,15 @@ const MEDKIT_HEAL := 40
 var _ammo_boxes: Array[Node3D] = []
 var _box_active: Array[bool] = []
 
-# Spawn manual (sin MultiplayerSpawner): permite entrar a la partida en
-# curso — al peer nuevo se le manda el estado completo cuando carga la Arena.
-var _spawn_data := {} # id -> data (solo server)
+# Los jugadores se replican con MultiplayerSpawner (handshake nativo de
+# Godot). Para el drop-in, los clientes se conectan DESPUÉS de cargar esta
+# escena (Net.pending_join): así el spawner ya existe cuando el server les
+# manda el estado de la partida en curso al conectar.
 var _initialized := false
 var _countdown_done := false
 
 @onready var players_root: Node3D = $Players
+@onready var spawner: MultiplayerSpawner = $Spawner
 
 func _ready() -> void:
 	_build_environment()
@@ -57,9 +59,26 @@ func _ready() -> void:
 		add_child(hud)
 		var match_hud: CanvasLayer = MATCH_HUD.new()
 		add_child(match_hud)
+	spawner.spawn_function = _spawn_player
 	if Net.is_session_server():
 		Net.players_changed.connect(_reconcile_players)
-	Net.notify_arena_ready.call_deferred()
+	Net.session_closed.connect(_on_session_lost)
+	if not Net.session_active() and not Net.pending_join.is_empty():
+		# Cliente entrando a un server remoto: conectar recién ahora.
+		var addr := Net.pending_join
+		Net.pending_join = ""
+		var err := Net.join(addr)
+		if not err.is_empty():
+			Net.last_error = err
+			Transition.change_scene(Net.MENU_SCENE)
+	else:
+		Net.notify_arena_ready.call_deferred()
+
+func _on_session_lost(_reason: String) -> void:
+	# Se cayó la conexión (o falló el join): volver al menú.
+	if is_inside_tree() and not Net.session_active():
+		Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
+		Transition.change_scene(Net.MENU_SCENE)
 
 func _physics_process(_delta: float) -> void:
 	if multiplayer.is_server():
@@ -195,14 +214,12 @@ func _set_box_active(i: int, active: bool) -> void:
 	_ammo_boxes[i].visible = active
 
 ## Llamado por Net en el SERVER cuando un peer (o el propio server) tiene
-## la Arena cargada. Maneja tanto el arranque como el drop-in a mitad de partida.
-func on_peer_ready(peer_id: int) -> void:
+## la Arena cargada. Maneja tanto el arranque como el drop-in a mitad de
+## partida: los jugadores ya spawneados le llegan al peer nuevo por el
+## flush automático del MultiplayerSpawner al conectarse.
+func on_peer_ready(_peer_id: int) -> void:
 	if not multiplayer.is_server():
 		return
-	if peer_id != 1:
-		# Peer nuevo: mandarle todos los jugadores ya spawneados.
-		for id in _spawn_data:
-			cl_spawn.rpc_id(peer_id, _spawn_data[id])
 	_initialized = true
 	_reconcile_players()
 	if not _countdown_done:
@@ -215,45 +232,23 @@ func _reconcile_players() -> void:
 	if not multiplayer.is_server() or not _initialized:
 		return
 	for id in Net.players:
-		if not _spawn_data.has(id):
-			_srv_spawn(id)
-	for id in _spawn_data.keys().duplicate():
-		if not Net.players.has(id):
-			_srv_despawn(id)
-
-func _srv_spawn(id: int) -> void:
-	var entry: Dictionary = Net.players[id]
-	var data := {
-		"id": id,
-		"name": entry["name"],
-		"character": entry["character"],
-		"bot": bool(entry.get("bot", false)),
-		"pos": pick_spawn_point(),
-	}
-	_spawn_data[id] = data
-	_do_spawn(data)
-	cl_spawn.rpc(data)
-
-func _srv_despawn(id: int) -> void:
-	_spawn_data.erase(id)
-	_do_despawn(id)
-	cl_despawn.rpc(id)
-
-@rpc("authority", "reliable")
-func cl_spawn(data: Dictionary) -> void:
-	_do_spawn(data)
-
-@rpc("authority", "reliable")
-func cl_despawn(id: int) -> void:
-	_do_despawn(id)
+		if not players_root.has_node(_node_name(id)):
+			spawner.spawn({
+				"id": id,
+				"name": Net.players[id]["name"],
+				"character": Net.players[id]["character"],
+				"bot": bool(Net.players[id].get("bot", false)),
+				"pos": pick_spawn_point(),
+			})
+	for child in players_root.get_children():
+		if child is NetPlayer and not Net.players.has(child.peer_id):
+			child.queue_free() # el spawner replica la baja
 
 func _node_name(id: int) -> String:
 	return ("P%d" % id) if id > 0 else ("B%d" % absi(id))
 
-func _do_spawn(data: Dictionary) -> void:
+func _spawn_player(data: Dictionary) -> Node:
 	var id := int(data["id"])
-	if players_root.has_node(_node_name(id)):
-		return
 	var p: NetPlayer = PLAYER_SCENE.instantiate()
 	p.name = _node_name(id)
 	p.peer_id = id
@@ -266,12 +261,7 @@ func _do_spawn(data: Dictionary) -> void:
 	# nodo raíz queda con autoridad del server (RPCs de combate = solo server).
 	if id > 0:
 		p.get_node("Sync").set_multiplayer_authority(id)
-	players_root.add_child(p)
-
-func _do_despawn(id: int) -> void:
-	var node := players_root.get_node_or_null(_node_name(id))
-	if node:
-		node.queue_free()
+	return p
 
 func pick_spawn_point() -> Vector3:
 	# Elegí el punto más lejos del enemigo vivo más cercano.

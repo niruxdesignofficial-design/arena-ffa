@@ -22,8 +22,6 @@ const HEADSHOT_MULT := 1.5
 const INTERP_SPEED := 14.0
 const SNAP_DISTANCE := 6.0
 
-const BLOOD_VFX := preload("res://Weapons/VFX/HitImpacts/VFXScenes/BloodSpillVFX.tscn")
-
 # Datos de spawn (los setea la spawn_function de la Arena en todos los peers).
 var peer_id := 1
 var display_name := "Jugador"
@@ -911,20 +909,11 @@ func _apply_fire_fx(windex: int, origin: Vector3, fx: Array) -> void:
 						Sfx.play("whiz", -6.0)
 		if bool(hit.get("miss", false)) or too_many_vfx:
 			continue
-		if hit["blood"]:
-			var inst: Node3D = BLOOD_VFX.instantiate()
-			inst.add_to_group("impact-vfx")
-			get_tree().root.add_child(inst)
-			inst.global_position = target
-			var normal: Vector3 = hit["n"]
-			var up := Vector3.UP if absf(normal.dot(Vector3.UP)) < 0.99 else Vector3.FORWARD
-			inst.look_at(target + normal, up)
-		else:
-			_spawn_puff(target)
+		_spawn_puff(target, bool(hit["blood"]))
 
-## Impacto en superficie: puff chico emisivo que crece y se esfuma (limpio,
-## reemplaza al humo gigante del demo).
-func _spawn_puff(pos: Vector3) -> void:
+## Impacto: puff chico emisivo que crece y se esfuma. Rojo si es sangre
+## (los VFX de partículas del demo renderizan mal en WebGL).
+func _spawn_puff(pos: Vector3, blood := false) -> void:
 	var mi := MeshInstance3D.new()
 	var sphere := SphereMesh.new()
 	sphere.radius = 0.06
@@ -934,7 +923,7 @@ func _spawn_puff(pos: Vector3) -> void:
 	var mat := StandardMaterial3D.new()
 	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	mat.albedo_color = Color(0.95, 0.9, 0.75, 0.85)
+	mat.albedo_color = Color(0.75, 0.08, 0.05, 0.9) if blood else Color(0.95, 0.9, 0.75, 0.85)
 	sphere.material = mat
 	mi.mesh = sphere
 	mi.add_to_group("impact-vfx")

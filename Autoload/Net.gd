@@ -52,6 +52,10 @@ const HISTORY_PATH := "user://match_history.json"
 # Partida única infinita (server dedicado): nunca termina; cada 30 min se
 # guarda el resultado en disco y el scoreboard arranca de cero.
 var infinite := false
+# Dirección a la que conectarse una vez cargada la Arena (drop-in flow).
+var pending_join := ""
+# Último error de sesión, para que el menú lo muestre al volver.
+var last_error := ""
 
 const STREAK_TITLES := {2: "DOUBLE KILL", 3: "TRIPLE KILL", 5: "RAMPAGE", 7: "UNSTOPPABLE"}
 const BOT_CHAT_KILLED := ["lag", "?", "nice one", "bruh", "wtf", "ok ok"]
@@ -189,7 +193,8 @@ func join(address: String) -> String:
 		if _awaiting_connect:
 			_awaiting_connect = false
 			leave()
-			session_closed.emit("Couldn't reach the server."))
+			last_error = "Couldn't reach the server."
+			session_closed.emit(last_error))
 	return ""
 
 func leave() -> void:
@@ -239,7 +244,8 @@ func _on_connected_to_server() -> void:
 func _on_connection_failed() -> void:
 	_awaiting_connect = false
 	leave()
-	session_closed.emit("Couldn't connect to the room.")
+	last_error = "Couldn't connect to the server."
+	session_closed.emit(last_error)
 
 func _on_server_disconnected() -> void:
 	var was_in_match := in_match
@@ -518,11 +524,15 @@ func cl_start_match() -> void:
 	_local_start_match()
 
 func _local_start_match() -> void:
-	print("[Net] entering match (scene -> Arena)")
 	in_match = true
 	round_seconds_left = round_seconds_total
 	last_results = {}
-	Transition.change_scene(ARENA_SCENE)
+	var cur := get_tree().current_scene
+	if cur and cur.scene_file_path == ARENA_SCENE:
+		# Drop-in: el cliente ya cargó la Arena y se conectó desde ahí.
+		notify_arena_ready()
+	else:
+		Transition.change_scene(ARENA_SCENE)
 
 ## La Arena de cada peer avisa cuando terminó de cargar; el server recién
 ## spawnea jugadores cuando todos están listos.
