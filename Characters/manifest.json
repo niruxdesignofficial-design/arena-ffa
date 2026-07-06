@@ -1,0 +1,30 @@
+{
+	"_help": "To add a character: drop the .glb into Characters/Models/ and add an entry here. 'animations' maps game states (idle/walk/run; optional: jump/shoot/die) to a GLB file and the clip name inside that GLB. 'tint' is optional (multiplies the material color). 'accent_color' colors the nametag and details.",
+	"characters": [
+		{
+			"id": "mascot",
+			"name": "Mascot",
+			"model": "res://Characters/Models/binance_mascot.glb",
+			"scale": 1.0,
+			"accent_color": "#f3ba2f",
+			"animations": {
+				"idle": { "file": "res://Characters/Models/binance_mascot.glb", "clip": "Armature|clip0|baselayer" },
+				"walk": { "file": "res://Characters/Models/binance_mascot_walk.glb", "clip": "Armature|walking_man|baselayer" },
+				"run": { "file": "res://Characters/Models/binance_mascot_run.glb", "clip": "Armature|running|baselayer" }
+			}
+		},
+		{
+			"id": "mascot_shadow",
+			"name": "Shadow Mascot",
+			"model": "res://Characters/Models/binance_mascot.glb",
+			"scale": 1.0,
+			"tint": "#7f5aff",
+			"accent_color": "#7f5aff",
+			"animations": {
+				"idle": { "file": "res://Characters/Models/binance_mascot.glb", "clip": "Armature|clip0|baselayer" },
+				"walk": { "file": "res://Characters/Models/binance_mascot_walk.glb", "clip": "Armature|walking_man|baselayer" },
+				"run": { "file": "res://Characters/Models/binance_mascot_run.glb", "clip": "Armature|running|baselayer" }
+			}
+		}
+	]
+}

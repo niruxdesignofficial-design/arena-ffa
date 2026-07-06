@@ -37,15 +37,15 @@ func update_health(current_health: float, max_health: float, animate: bool = tru
 	ghost_health_bar.max_value = max_health
 
 	# Animate the main health bar
-	var tween = create_tween().set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)
 	if animate:
+		var tween = create_tween().set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)
 		tween.tween_property(health_bar, "value", current_health, HEALTH_ANIMATION_SPEED)
 	else:
 		health_bar.value = current_health
 
 	# Animate the "ghost" bar (damage taken indicator) after a delay
-	tween = create_tween().set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
 	if animate:
+		var tween = create_tween().set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
 		tween.set_parallel(false) # Run tweens sequentially
 		tween.tween_interval(GHOST_HEALTH_DELAY)
 		tween.tween_property(ghost_health_bar, "value", current_health, HEALTH_ANIMATION_SPEED * 1.5)

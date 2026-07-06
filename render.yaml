@@ -1,0 +1,18 @@
+# Render Blueprint — deploys both pieces of ARENA FFA from this repo:
+#  1) arena-ffa-server: the headless Godot game server (Docker, WebSocket).
+#     Render injects PORT; the server reads it (Net.listen_port()).
+#     Players connect to wss://arena-ffa-server-XXXX.onrender.com
+#  2) arena-ffa-web: the static web client (build/web committed in the repo).
+services:
+  - type: web
+    name: arena-ffa-server
+    runtime: docker
+    plan: free
+    autoDeploy: true
+
+  - type: web
+    name: arena-ffa-web
+    runtime: static
+    buildCommand: ""
+    staticPublishPath: build/web
+    autoDeploy: true
