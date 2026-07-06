@@ -36,6 +36,7 @@ func _ready() -> void:
 	_streams["step"] = _step()
 	_streams["streak"] = _twoblip(880.0, 1320.0, 0.22, 0.5)
 	_streams["chat"] = _blip(1500.0, 0.03, 0.2)
+	_streams["whiz"] = _whiz()
 
 func play(sound: String, vol_db := 0.0, pitch := 1.0) -> void:
 	if _headless or not _streams.has(sound):
@@ -116,6 +117,13 @@ func _step() -> AudioStreamWAV:
 	return _make(0.07, func(t: float) -> float:
 		var env := exp(-t * 60.0)
 		return (_rng.randf_range(-1.0, 1.0) * 0.35 + sin(TAU * 95.0 * t) * 0.5) * env * 0.5)
+
+## Bala pasando cerca: barrido corto de ruido agudo.
+func _whiz() -> AudioStreamWAV:
+	return _make(0.12, func(t: float) -> float:
+		var k := t / 0.12
+		var env := sin(PI * k)
+		return _rng.randf_range(-1.0, 1.0) * env * env * 0.3 * (1.0 - k * 0.5))
 
 func _click_pair() -> AudioStreamWAV:
 	return _make(0.16, func(t: float) -> float:

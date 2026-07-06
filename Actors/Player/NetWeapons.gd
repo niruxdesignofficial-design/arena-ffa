@@ -154,7 +154,11 @@ func switch_to(index: int) -> void:
 	_ammo[current_index]["reloading"] = false
 	_viewmodels[current_index].visible = false
 	current_index = index
-	_viewmodels[current_index].visible = true
+	var vm := _viewmodels[current_index]
+	vm.visible = true
+	# Animación de "sacar": arranca baja y girada; el resorte la sube sola.
+	vm.position = _rest_pos[current_index] + Vector3(0, -0.28, 0.12)
+	vm.rotation = Vector3(deg_to_rad(45), 0, 0)
 	weapon_changed.emit(current_index, String(current_def()["name"]))
 	_emit_ammo()
 

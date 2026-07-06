@@ -46,6 +46,8 @@ var _srv_dead := false
 var _srv_last_fire := -10.0
 var _srv_protect_until := 0.0
 var _srv_unlocked: Array[bool] = []
+var _srv_prev_pos := Vector3.ZERO
+var _srv_speed := 0.0 # velocidad vista por el server (para dispersión al moverse)
 
 # IA de bots (solo server). El "skill" varía por bot para que se sientan
 # personas distintas: puntería, cadencia y reflejos diferentes.
@@ -68,6 +70,8 @@ var _auto_seed := 0.0
 var _bob_time := 0.0
 var _ads := false
 var _fov_kick := 0.0
+var _consec_shots := 0
+var _last_shot_at := -10.0
 var _step_accum := 0.0
 var _remote_step_timer := 0.0
 var _hand_flash: Node3D
@@ -273,19 +277,34 @@ func _do_fire() -> void:
 		return
 	if not _weapons.try_fire():
 		return
+	var def := _weapons.current_def()
+	# Retroceso de cámara: sube la mira; en automáticas escala con la ráfaga
+	# (el que controla el spray tiene ventaja — skill real).
+	var now := _now()
+	_consec_shots = _consec_shots + 1 if now - _last_shot_at < 0.4 else 1
+	_last_shot_at = now
+	var punch: float = float(def.get("cam_punch", 0.8)) \
+		* (1.0 + float(def.get("climb", 0.0)) * (_consec_shots - 1))
+	if _ads:
+		punch *= 0.6
+	head.rotation.x = clampf(head.rotation.x + deg_to_rad(punch * randf_range(0.85, 1.15)), -PI / 2, PI / 2)
+	rotate_y(deg_to_rad(randf_range(-punch, punch) * 0.12))
 	var hud := get_tree().get_first_node_in_group("game-ui")
 	if hud and hud.crosshair:
 		hud.crosshair.recoil += 0.25
 	var origin: Vector3 = camera.global_position
 	var dir: Vector3 = -camera.global_transform.basis.z
 	if multiplayer.is_server():
-		srv_fire(_weapons.current_index, origin, dir)
+		srv_fire(_weapons.current_index, origin, dir, _ads)
 	else:
-		srv_fire.rpc_id(1, _weapons.current_index, origin, dir)
+		srv_fire.rpc_id(1, _weapons.current_index, origin, dir, _ads)
 
 # MOVIMIENTO + ANIMACIÓN
 
 func _physics_process(delta: float) -> void:
+	if multiplayer.is_server() and delta > 0.0:
+		_srv_speed = (global_position - _srv_prev_pos).length() / delta
+		_srv_prev_pos = global_position
 	if is_bot:
 		if multiplayer.is_server():
 			_bot_physics(delta)
@@ -352,6 +371,7 @@ func _local_move(delta: float) -> void:
 		speed = SPRINT_SPEED
 	elif _is_crouching:
 		speed = CROUCH_SPEED
+	speed *= float(WeaponDefs.get_def(weapon_index).get("speed_mult", 1.0))
 	if is_on_floor():
 		# En el piso el control es instantáneo (snappy).
 		velocity.x = direction.x * speed
@@ -530,9 +550,9 @@ func _do_autopilot_fire(target: NetPlayer) -> void:
 	if target:
 		dir = (target.global_position + Vector3.UP * 1.2 - origin).normalized()
 	if multiplayer.is_server():
-		srv_fire(_weapons.current_index, origin, dir)
+		srv_fire(_weapons.current_index, origin, dir, false)
 	else:
-		srv_fire.rpc_id(1, _weapons.current_index, origin, dir)
+		srv_fire.rpc_id(1, _weapons.current_index, origin, dir, false)
 
 func _nearest_enemy() -> NetPlayer:
 	var best: NetPlayer = null
@@ -549,7 +569,7 @@ func _nearest_enemy() -> NetPlayer:
 # COMBATE — TODO SE RESUELVE EN EL SERVER
 
 @rpc("any_peer", "reliable")
-func srv_fire(windex: int, origin: Vector3, dir: Vector3) -> void:
+func srv_fire(windex: int, origin: Vector3, dir: Vector3, ads := false) -> void:
 	if not multiplayer.is_server():
 		return
 	var sender := multiplayer.get_remote_sender_id()
@@ -568,13 +588,24 @@ func srv_fire(windex: int, origin: Vector3, dir: Vector3) -> void:
 	var server_eye := global_position + Vector3.UP * 1.7
 	if origin.distance_to(server_eye) > 2.5:
 		origin = server_eye
-	_srv_execute_fire(windex, origin, dir.normalized())
+	_srv_execute_fire(windex, origin, dir.normalized(), ads)
 
 ## Resolución real del disparo (la usan srv_fire y los bots).
-func _srv_execute_fire(windex: int, origin: Vector3, dir: Vector3) -> void:
+## La dispersión se decide ACÁ (server): hip vs ADS + penalidad por moverse.
+func _srv_execute_fire(windex: int, origin: Vector3, dir: Vector3, ads := false) -> void:
 	var def := WeaponDefs.get_def(windex)
 	var reach := float(def["range"])
 	var pellets := int(def["pellets"])
+	var spread_deg := float(def.get("spread_ads" if ads else "spread_hip", 0.0))
+	if _srv_speed > 2.0:
+		spread_deg += float(def.get("spread_move", 0.0))
+	if spread_deg > 0.01:
+		var cone := deg_to_rad(spread_deg)
+		var axis := dir.cross(Vector3.UP).normalized()
+		if axis.length_squared() < 0.5:
+			axis = Vector3.RIGHT
+		dir = dir.rotated(axis, randf_range(-cone, cone))
+		dir = dir.rotated(dir.normalized(), randf() * TAU).normalized()
 	var fx: Array = []
 	if pellets > 0:
 		# Escopeta: perdigones con dispersión, decididos por el server.
@@ -583,14 +614,14 @@ func _srv_execute_fire(windex: int, origin: Vector3, dir: Vector3) -> void:
 			var spread := deg_to_rad(WeaponDefs.SHOTGUN_SPREAD_DEG)
 			var pdir := dir.rotated(dir.cross(Vector3.UP).normalized(), randf_range(-spread, spread))
 			pdir = pdir.rotated(dir.normalized(), randf() * TAU)
-			_srv_trace(origin, pdir, reach, pellet_damage, fx)
+			_srv_trace(origin, pdir, reach, pellet_damage, fx, windex)
 	else:
-		_srv_trace(origin, dir, reach, int(def["damage"]), fx)
+		_srv_trace(origin, dir, reach, int(def["damage"]), fx, windex)
 	if not fx.is_empty():
 		cl_fire_fx.rpc(windex, origin, fx)
 		_apply_fire_fx(windex, origin, fx)
 
-func _srv_trace(origin: Vector3, dir: Vector3, reach: float, damage: int, fx: Array) -> void:
+func _srv_trace(origin: Vector3, dir: Vector3, reach: float, damage: int, fx: Array, windex := 1) -> void:
 	var space := get_world_3d().direct_space_state
 	var query := PhysicsRayQueryParameters3D.create(origin, origin + dir * reach)
 	var exclusions: Array[RID] = [get_rid()]
@@ -606,6 +637,14 @@ func _srv_trace(origin: Vector3, dir: Vector3, reach: float, damage: int, fx: Ar
 	var collider = result["collider"]
 	var is_player: bool = collider is NetPlayer and collider != self
 	var headshot := false
+	var backstab := false
+	if is_player and windex == 0:
+		# Backstab: cuchillazo por la espalda = x3 (mata de una).
+		var victim := collider as NetPlayer
+		var to_attacker: Vector3 = (global_position - victim.global_position).normalized()
+		if to_attacker.dot(-victim.transform.basis.z) < -0.35:
+			backstab = true
+			damage *= 3
 	if is_player:
 		# Caída de daño con la distancia (a partir de la mitad del alcance).
 		if reach > 10.0:
@@ -618,9 +657,9 @@ func _srv_trace(origin: Vector3, dir: Vector3, reach: float, damage: int, fx: Ar
 			damage = int(damage * HEADSHOT_MULT)
 	fx.append({"p": result["position"], "n": result["normal"], "blood": is_player, "miss": false})
 	if is_player:
-		collider._srv_apply_damage(damage, peer_id, headshot)
+		collider._srv_apply_damage(damage, peer_id, headshot, windex, backstab)
 
-func _srv_apply_damage(amount: int, attacker_id: int, headshot := false) -> void:
+func _srv_apply_damage(amount: int, attacker_id: int, headshot := false, windex := 1, backstab := false) -> void:
 	if not multiplayer.is_server() or _srv_dead:
 		return
 	if _now() < _srv_protect_until:
@@ -640,7 +679,7 @@ func _srv_apply_damage(amount: int, attacker_id: int, headshot := false) -> void
 			else:
 				attacker.cl_hitmarker.rpc_id(attacker_id, headshot)
 	if _srv_health <= 0:
-		_srv_die(attacker_id, headshot)
+		_srv_die(attacker_id, headshot, windex, backstab)
 
 func _send_owner_health(from_pos := Vector3.INF) -> void:
 	if is_bot:
@@ -650,10 +689,13 @@ func _send_owner_health(from_pos := Vector3.INF) -> void:
 	else:
 		cl_health.rpc_id(peer_id, _srv_health, from_pos)
 
-func _srv_die(attacker_id: int, headshot := false) -> void:
+func _srv_die(attacker_id: int, headshot := false, windex := 1, backstab := false) -> void:
 	_srv_dead = true
 	var killer_name: String = Net.players.get(attacker_id, {}).get("name", "?")
-	Net.register_kill(attacker_id, peer_id, headshot)
+	var weapon_label := String(WeaponDefs.get_def(windex)["name"])
+	if backstab:
+		weapon_label = "Knife · BACKSTAB"
+	Net.register_kill(attacker_id, peer_id, headshot, weapon_label)
 	cl_set_dead.rpc(true, killer_name)
 	_local_set_dead(true, killer_name)
 	if attacker_id != peer_id:
@@ -853,10 +895,20 @@ func _apply_fire_fx(windex: int, origin: Vector3, fx: Array) -> void:
 		if _hand_flash:
 			_hand_flash.start()
 	var too_many_vfx: bool = get_tree().get_nodes_in_group("impact-vfx").size() > 8
+	var whizzed := false
 	for hit in fx:
 		var target: Vector3 = hit["p"]
 		if windex != 0: # el cuchillo no traza
-			_spawn_tracer(origin, target)
+			_spawn_tracer(origin, target, windex)
+			# Silbido si la bala pasó cerca de TU cámara (y no la tiraste vos).
+			if not whizzed and not is_local():
+				var cam := get_viewport().get_camera_3d()
+				if cam:
+					var seg := target - origin
+					var t := clampf((cam.global_position - origin).dot(seg) / maxf(seg.length_squared(), 0.001), 0.0, 1.0)
+					if cam.global_position.distance_to(origin + seg * t) < 1.8:
+						whizzed = true
+						Sfx.play("whiz", -6.0)
 		if bool(hit.get("miss", false)) or too_many_vfx:
 			continue
 		if hit["blood"]:
@@ -894,7 +946,7 @@ func _spawn_puff(pos: Vector3) -> void:
 	tw.tween_property(mat, "albedo_color:a", 0.0, 0.25)
 	tw.chain().tween_callback(mi.queue_free)
 
-func _spawn_tracer(from: Vector3, to: Vector3) -> void:
+func _spawn_tracer(from: Vector3, to: Vector3, windex := 1) -> void:
 	var dir := to - from
 	var dist := dir.length()
 	if dist < 1.2:
@@ -903,9 +955,10 @@ func _spawn_tracer(from: Vector3, to: Vector3) -> void:
 	# Nace un poco adelante y abajo para que no salga de la cara.
 	var start := from + dir * 0.9 - Vector3.UP * 0.12
 	dist = start.distance_to(to)
+	var width := float(WeaponDefs.get_def(windex).get("tracer", 0.02))
 	var mi := MeshInstance3D.new()
 	var box := BoxMesh.new()
-	box.size = Vector3(0.02, 0.02, dist)
+	box.size = Vector3(width, width, dist)
 	var mat := StandardMaterial3D.new()
 	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
@@ -931,11 +984,15 @@ func _find_player(id: int) -> NetPlayer:
 func _on_ammo_changed(mag: int, reserve: int) -> void:
 	var hud := get_tree().get_first_node_in_group("game-ui")
 	if hud and _weapons:
-		var wname := String(_weapons.current_def()["name"])
+		var def := _weapons.current_def()
+		var wname := String(def["name"])
 		if mag < 0:
 			hud.update_weapon(wname, 1, 0, false)
 		else:
 			hud.update_weapon(wname, mag, reserve)
+		if hud.has_method("set_low_ammo"):
+			hud.set_low_ammo(bool(def["uses_ammo"]) and mag >= 0 \
+				and mag <= maxi(1, int(def["mag"]) / 4) )
 
 func _on_weapon_changed(index: int, weapon_name: String) -> void:
 	var hud := get_tree().get_first_node_in_group("game-ui")

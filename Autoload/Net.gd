@@ -558,7 +558,7 @@ func cl_countdown(seconds: float) -> void:
 
 # PUNTAJE (solo el server muta)
 
-func register_kill(killer_id: int, victim_id: int, headshot := false) -> void:
+func register_kill(killer_id: int, victim_id: int, headshot := false, weapon := "") -> void:
 	if not multiplayer.is_server() or not in_match:
 		return
 	var victim_name: String = players[victim_id]["name"] if players.has(victim_id) else "?"
@@ -570,7 +570,10 @@ func register_kill(killer_id: int, victim_id: int, headshot := false) -> void:
 		players[killer_id]["kills"] += 1
 		players[killer_id]["streak"] += 1
 		players[killer_id]["score"] = int(players[killer_id].get("score", 0)) + 100 + (50 if headshot else 0)
-		feed = "%s eliminated %s" % [players[killer_id]["name"], victim_name]
+		if weapon.is_empty():
+			feed = "%s eliminated %s" % [players[killer_id]["name"], victim_name]
+		else:
+			feed = "%s [%s] %s" % [players[killer_id]["name"], weapon, victim_name]
 		if headshot:
 			feed += " ☠ HEADSHOT"
 		var streak := int(players[killer_id]["streak"])

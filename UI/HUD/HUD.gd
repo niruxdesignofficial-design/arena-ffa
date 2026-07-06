@@ -74,6 +74,11 @@ func update_weapon(weapon_name: String, mag_ammo: int, reserve_ammo: int, animat
 			tween.tween_property(mag_ammo_label, "scale", Vector2.ONE, AMMO_POP_SPEED * 1.5)
 
 
+## Pinta el contador de balas en rojo cuando queda poca munición.
+func set_low_ammo(low: bool) -> void:
+	mag_ammo_label.add_theme_color_override("font_color",
+		Color(1.0, 0.25, 0.2) if low else Color.WHITE)
+
 ## Displays an in-game prompt with a fade-in animation.
 var prompt_tween: Tween
 

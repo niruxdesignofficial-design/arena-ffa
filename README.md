@@ -36,6 +36,13 @@ It also runs **native**: open the project with Godot and use CREATE ROOM
   first to 10 kills or best in 5 minutes, with a 3-2-1 countdown.
 - **All 6 weapons from the start** (keys 1-6 or mouse wheel): Knife,
   Pistol, MAC-10 (auto), Shotgun, AK-47 (auto), AWP.
+- **Every weapon feels different**: per-weapon camera recoil (autos climb
+  as you spray — control it), server-side spread (hip vs ADS vs moving),
+  the AWP one-shots the body but is wild without the scope, the knife
+  makes you faster and **backstabs kill instantly**, and the MAC-10 is a
+  fast-move close-range shredder.
+- Bullets that miss you by inches **whiz** past your ear; the kill feed
+  shows the weapon used; low mag turns the ammo counter red.
 - **Headshots** deal 1.5x damage (red hitmarker + ☠ in the feed).
 - **Damage falls off** with distance past half of each gun's range.
 - **Kills heal you +25 HP.** Medkits (+40) and spinning ammo boxes
