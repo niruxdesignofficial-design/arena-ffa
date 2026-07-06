@@ -10,16 +10,16 @@ extends CharacterBody3D
 enum Anim { IDLE, WALK, RUN, AIR, DEAD }
 
 const MAX_HEALTH := 100
-const WALK_SPEED := 5.0
-const SPRINT_SPEED := 8.0
-const CROUCH_SPEED := 2.5
-const JUMP_STRENGTH := 5.0
+const WALK_SPEED := 6.0
+const SPRINT_SPEED := 8.8
+const CROUCH_SPEED := 2.8
+const JUMP_STRENGTH := 5.4
 const GRAVITY := 9.8
 const RESPAWN_SECONDS := 3.0
 const SPAWN_PROTECT_SECONDS := 1.5
 const HEADSHOT_HEIGHT := 1.30
 const HEADSHOT_MULT := 1.5
-const INTERP_SPEED := 14.0
+const INTERP_SPEED := 16.0
 const SNAP_DISTANCE := 6.0
 
 # Datos de spawn (los setea la spawn_function de la Arena en todos los peers).
@@ -303,6 +303,14 @@ func _physics_process(delta: float) -> void:
 	if multiplayer.is_server() and delta > 0.0:
 		_srv_speed = (global_position - _srv_prev_pos).length() / delta
 		_srv_prev_pos = global_position
+		# Failsafe anti-bugs: nadie puede terminar fuera del mapa.
+		if global_position.y < -4.0 and not _srv_dead:
+			var arena := get_tree().current_scene
+			var safe := Vector3(0, 1.5, 0)
+			if arena and arena.has_method("pick_spawn_point"):
+				safe = arena.pick_spawn_point()
+			cl_respawn.rpc(safe)
+			_local_respawn(safe)
 	if is_bot:
 		if multiplayer.is_server():
 			_bot_physics(delta)
@@ -376,8 +384,8 @@ func _local_move(delta: float) -> void:
 		velocity.z = direction.z * speed
 	else:
 		# En el aire hay control parcial: conservás el impulso del salto.
-		velocity.x = lerpf(velocity.x, direction.x * speed, 4.0 * delta)
-		velocity.z = lerpf(velocity.z, direction.z * speed, 4.0 * delta)
+		velocity.x = lerpf(velocity.x, direction.x * speed, 5.5 * delta)
+		velocity.z = lerpf(velocity.z, direction.z * speed, 5.5 * delta)
 	move_and_slide()
 	_head_feel(delta, direction, sprinting)
 	_update_anim_state(direction, sprinting)
@@ -386,7 +394,13 @@ func _local_move(delta: float) -> void:
 func _is_scoped() -> bool:
 	return _weapons != null and _weapons.current_index == 5 # AWP
 
+var _was_on_floor := true
+
 func _head_feel(delta: float, direction: Vector3, sprinting: bool) -> void:
+	# Dip de cámara al aterrizar; el lerp de abajo lo recupera solo.
+	if is_on_floor() and not _was_on_floor:
+		head.position.y -= 0.08
+	_was_on_floor = is_on_floor()
 	var target_y := 0.95 if _is_crouching else 1.55
 	var bob := 0.0
 	if is_on_floor() and direction.length() > 0.1:
@@ -410,9 +424,18 @@ func _update_anim_state(direction: Vector3, sprinting: bool) -> void:
 	if _weapons:
 		weapon_index = _weapons.current_index
 
+var _last_rig_pos := Vector3.ZERO
+
 func _drive_rig() -> void:
 	if _rig == null:
 		return
+	# Velocidad horizontal observada -> escala de la animación (sin patinar).
+	var dt := get_process_delta_time()
+	if dt > 0.0:
+		var moved := global_position - _last_rig_pos
+		moved.y = 0
+		_rig.set_move_speed(moved.length() / dt)
+	_last_rig_pos = global_position
 	# Pasos de los demás jugadores (sonido posicional).
 	if not is_local() and (anim_state == Anim.WALK or anim_state == Anim.RUN):
 		_remote_step_timer -= get_process_delta_time()
@@ -486,8 +509,8 @@ func _bot_physics(delta: float) -> void:
 	if not space.intersect_ray(wall_query).is_empty():
 		rotation.y += _bot_strafe_dir * 2.2 * delta
 	var direction := (transform.basis * move_intent).normalized()
-	velocity.x = direction.x * WALK_SPEED
-	velocity.z = direction.z * WALK_SPEED
+	velocity.x = lerpf(velocity.x, direction.x * WALK_SPEED, 8.0 * delta)
+	velocity.z = lerpf(velocity.z, direction.z * WALK_SPEED, 8.0 * delta)
 	var was_pos := global_position
 	move_and_slide()
 	# Si quedó trabado contra algo, saltar o cambiar de strafe.

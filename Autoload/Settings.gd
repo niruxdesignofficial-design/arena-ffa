@@ -33,6 +33,7 @@ var show_stats := true # ping/FPS en el HUD
 var player_name := "Player"
 var character_id := ""
 var last_server := "" # última dirección usada en JOIN (ej. wss://xxx.onrender.com)
+var wallet := "" # pubkey de la wallet conectada (identidad, sin lógica on-chain)
 var binds := {} # action -> physical_keycode (int)
 
 func _ready() -> void:
@@ -54,6 +55,7 @@ func load_settings() -> void:
 	player_name = String(cfg.get_value("profile", "name", "Player"))
 	character_id = String(cfg.get_value("profile", "character", ""))
 	last_server = String(cfg.get_value("profile", "last_server", ""))
+	wallet = String(cfg.get_value("profile", "wallet", ""))
 	for action in REBINDABLE:
 		var key := int(cfg.get_value("binds", action, 0))
 		if key != 0:
@@ -69,6 +71,7 @@ func save_settings() -> void:
 	cfg.set_value("profile", "name", player_name)
 	cfg.set_value("profile", "character", character_id)
 	cfg.set_value("profile", "last_server", last_server)
+	cfg.set_value("profile", "wallet", wallet)
 	for action in binds.keys():
 		cfg.set_value("binds", action, binds[action])
 	cfg.save(PATH)

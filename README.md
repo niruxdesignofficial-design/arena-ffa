@@ -18,8 +18,9 @@ You need Godot 4.4.1 — there's a copy at `~/Downloads/Godot.app`
    python3 -m http.server 8091 --directory build/web
    ```
 3. Open `http://127.0.0.1:8091/` in a browser (one tab per player).
-   Menu → PLAY → pick your character and name → FIND MATCH → you drop
-   straight into the endless match. Click once to grab the mouse.
+   Menu → Connect Wallet or Play as Guest → pick a name/character →
+   JOIN COMMUNITY MATCH → you drop straight into the endless match.
+   Click once to grab the mouse.
 
 It also runs **native**: open the project with Godot and use CREATE ROOM
 (LAN host) or JOIN BY IP. LAN discovery only exists on native builds.

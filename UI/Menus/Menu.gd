@@ -1,43 +1,35 @@
 # Menu.gd
-# Marco completo del juego: pantalla de inicio, selección de personaje
-# (con preview 3D girando), sala/lobby (crear, buscar LAN, unirse por IP),
-# ajustes persistidos y pantalla de fin de ronda con revancha.
+# Menú BÁSICO sobre el wallpaper del juego: elegís identidad (wallet o
+# guest), tu personaje, y entrás a la partida comunitaria (una sola,
+# infinita, poblada por el server). Ajustes en un botón chico.
 extends Control
 
-enum Screen { MAIN, CHARACTER, LOBBY, SETTINGS, RESULTS }
+enum Screen { MAIN, SETTINGS, RESULTS }
 
 const FONT_PATH := "res://UI/Share_Tech_Mono_Font/ShareTechMono-Regular.ttf"
+const WALLPAPER := "res://UI/Menus/wallpaper.png"
 const GOLD := Color(0.953, 0.729, 0.184)
 const BLUE := Color(0.235, 0.604, 0.831)
-const PANEL_BG := Color(0.086, 0.09, 0.102, 0.92)
+const PANEL_BG := Color(0.05, 0.055, 0.07, 0.88)
 
 var _font: FontFile
 var _screens := {}
 var _current: int = Screen.MAIN
 
-# Selección de personaje.
+# Identidad + personaje.
 var _char_ids: Array[String] = []
 var _char_index := 0
-var _preview_viewport: SubViewport
-var _preview_rig_holder: Node3D
-var _char_name_label: Label
 var _name_edit: LineEdit
-
-# Lobby.
-var _lobby_pre: VBoxContainer
-var _lobby_room: VBoxContainer
-var _lobby_players_box: VBoxContainer
-var _lobby_status: Label
-var _lobby_start_btn: Button
-var _ip_edit: LineEdit
-var _search_results: VBoxContainer
+var _char_label: Label
+var _wallet_btn: Button
+var _server_edit: LineEdit
 var _toast: Label
 
 # Ajustes.
 var _awaiting_rebind := ""
 var _rebind_buttons := {}
 
-# Resultados.
+# Resultados (solo se usa si alguna vez corre una sala por rondas).
 var _results_box: VBoxContainer
 
 func _ready() -> void:
@@ -51,14 +43,10 @@ func _ready() -> void:
 	Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
 	_build_background()
 	_screens[Screen.MAIN] = _build_main()
-	_screens[Screen.CHARACTER] = _build_character()
-	_screens[Screen.LOBBY] = _build_lobby()
 	_screens[Screen.SETTINGS] = _build_settings()
 	_screens[Screen.RESULTS] = _build_results()
 	_build_toast()
-	Net.players_changed.connect(_refresh_lobby)
-	Net.session_closed.connect(_on_session_closed)
-	Net.lan_search_done.connect(_on_lan_results)
+	Net.session_closed.connect(func(reason): _show_toast(reason))
 	if not Net.last_error.is_empty():
 		_show_toast.call_deferred(Net.last_error)
 		Net.last_error = ""
@@ -73,15 +61,8 @@ func goto(screen: int) -> void:
 	_current = screen
 	for key in _screens:
 		_screens[key].visible = (key == screen)
-	if screen == Screen.CHARACTER:
-		_rebuild_preview()
 	if screen == Screen.RESULTS:
 		_fill_results()
-	if screen == Screen.LOBBY:
-		if Net.session_active():
-			_show_room()
-		else:
-			_show_pre_lobby()
 
 # HELPERS DE UI
 
@@ -97,19 +78,18 @@ func _button(text: String, size := 22) -> Button:
 	b.text = text
 	b.add_theme_font_override("font", _font)
 	b.add_theme_font_size_override("font_size", size)
-	b.custom_minimum_size = Vector2(340, 46)
+	b.custom_minimum_size = Vector2(340, 48)
 	var normal := StyleBoxFlat.new()
-	normal.bg_color = Color(0.10, 0.12, 0.155)
-	normal.border_color = Color(BLUE.r, BLUE.g, BLUE.b, 0.35)
+	normal.bg_color = Color(0.07, 0.08, 0.10, 0.92)
+	normal.border_color = Color(BLUE.r, BLUE.g, BLUE.b, 0.4)
 	normal.set_border_width_all(1)
 	normal.set_corner_radius_all(8)
 	normal.set_content_margin_all(10)
 	var hover: StyleBoxFlat = normal.duplicate()
-	hover.bg_color = Color(0.135, 0.175, 0.225)
+	hover.bg_color = Color(0.12, 0.15, 0.19, 0.95)
 	hover.border_color = BLUE
 	hover.set_border_width_all(2)
 	var pressed: StyleBoxFlat = normal.duplicate()
-	pressed.bg_color = Color(0.08, 0.09, 0.11)
 	pressed.border_color = GOLD
 	pressed.set_border_width_all(2)
 	b.add_theme_stylebox_override("normal", normal)
@@ -121,57 +101,68 @@ func _button(text: String, size := 22) -> Button:
 	b.pressed.connect(func(): Sfx.play("ui", -6.0))
 	return b
 
+func _gold_button(text: String, size := 24) -> Button:
+	var b := _button(text, size)
+	var sb: StyleBoxFlat = b.get_theme_stylebox("normal").duplicate()
+	sb.bg_color = Color(0.32, 0.24, 0.05, 0.95)
+	sb.border_color = GOLD
+	sb.set_border_width_all(2)
+	b.add_theme_stylebox_override("normal", sb)
+	b.add_theme_color_override("font_color", Color(1, 0.9, 0.6))
+	return b
+
 func _panel_style(border := BLUE) -> StyleBoxFlat:
 	var sb := StyleBoxFlat.new()
 	sb.bg_color = PANEL_BG
 	sb.border_color = Color(border.r, border.g, border.b, 0.45)
 	sb.set_border_width_all(2)
 	sb.set_corner_radius_all(12)
-	sb.set_content_margin_all(26)
-	sb.shadow_color = Color(0, 0, 0, 0.5)
-	sb.shadow_size = 18
+	sb.set_content_margin_all(24)
+	sb.shadow_color = Color(0, 0, 0, 0.6)
+	sb.shadow_size = 20
 	return sb
 
-func _screen_root() -> CenterContainer:
-	var c := CenterContainer.new()
+func _screen_root() -> Control:
+	var c := Control.new()
 	c.set_anchors_preset(Control.PRESET_FULL_RECT)
 	c.visible = false
 	add_child(c)
 	return c
 
 func _build_background() -> void:
-	# Gradiente azul profundo -> casi negro, con una banda dorada sutil.
+	# Wallpaper del juego (cover, recorta lo que sobre) + oscurecido abajo.
+	var bg := TextureRect.new()
+	bg.texture = load(WALLPAPER)
+	bg.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	bg.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
+	bg.set_anchors_preset(Control.PRESET_FULL_RECT)
+	add_child(bg)
 	var grad := Gradient.new()
-	grad.colors = PackedColorArray([
-		Color(0.075, 0.10, 0.155), Color(0.045, 0.055, 0.08), Color(0.03, 0.035, 0.05),
-	])
-	grad.offsets = PackedFloat32Array([0.0, 0.55, 1.0])
+	grad.colors = PackedColorArray([Color(0, 0, 0, 0.15), Color(0, 0, 0, 0.78)])
+	grad.offsets = PackedFloat32Array([0.35, 1.0])
 	var grad_tex := GradientTexture2D.new()
 	grad_tex.gradient = grad
 	grad_tex.fill_from = Vector2(0, 0)
 	grad_tex.fill_to = Vector2(0, 1)
-	var bg := TextureRect.new()
-	bg.texture = grad_tex
-	bg.stretch_mode = TextureRect.STRETCH_SCALE
-	bg.set_anchors_preset(Control.PRESET_FULL_RECT)
-	add_child(bg)
-	var line := ColorRect.new()
-	line.color = Color(GOLD.r, GOLD.g, GOLD.b, 0.25)
-	line.set_anchors_preset(Control.PRESET_FULL_RECT)
-	line.anchor_top = 0.328
-	line.anchor_bottom = 0.331
-	line.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	add_child(line)
+	var shade := TextureRect.new()
+	shade.texture = grad_tex
+	shade.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	shade.stretch_mode = TextureRect.STRETCH_SCALE
+	shade.set_anchors_preset(Control.PRESET_FULL_RECT)
+	shade.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	add_child(shade)
 
 func _build_toast() -> void:
 	_toast = _label(17, Color(1, 0.6, 0.4))
 	_toast.set_anchors_preset(Control.PRESET_CENTER_BOTTOM)
 	_toast.anchor_left = 0.5
 	_toast.anchor_right = 0.5
-	_toast.offset_top = -60
+	_toast.offset_top = -40
 	_toast.offset_left = -400
 	_toast.offset_right = 400
 	_toast.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_toast.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.9))
+	_toast.add_theme_constant_override("outline_size", 6)
 	_toast.text = ""
 	add_child(_toast)
 
@@ -182,268 +173,221 @@ func _show_toast(text: String) -> void:
 	tw.tween_interval(3.0)
 	tw.tween_property(_toast, "modulate:a", 0.0, 1.0)
 
-# PANTALLA PRINCIPAL
+# PANTALLA PRINCIPAL (todo en una)
 
 func _build_main() -> Control:
 	var root := _screen_root()
-	var box := VBoxContainer.new()
-	box.alignment = BoxContainer.ALIGNMENT_CENTER
-	box.add_theme_constant_override("separation", 14)
-	root.add_child(box)
-	var title := _label(76, GOLD)
+
+	var title := _label(84, GOLD)
 	title.text = "ARENA FFA"
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	title.add_theme_color_override("font_outline_color", Color(0.25, 0.16, 0.02))
-	title.add_theme_constant_override("outline_size", 10)
-	box.add_child(title)
-	var subtitle := _label(20, Color(1, 1, 1, 0.55))
-	subtitle.text = "free-for-all — most kills wins"
+	title.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.9))
+	title.add_theme_constant_override("outline_size", 14)
+	title.set_anchors_preset(Control.PRESET_CENTER_TOP)
+	title.anchor_left = 0.5
+	title.anchor_right = 0.5
+	title.offset_left = -400
+	title.offset_right = 400
+	title.offset_top = 40
+	root.add_child(title)
+	var subtitle := _label(18, Color(1, 1, 1, 0.85))
+	subtitle.text = "one endless community match — drop in, most kills wins"
 	subtitle.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	box.add_child(subtitle)
-	box.add_child(_spacer(30))
-	var play := _button("PLAY")
-	play.pressed.connect(func(): goto(Screen.CHARACTER))
-	box.add_child(play)
-	var settings := _button("SETTINGS")
-	settings.pressed.connect(func(): goto(Screen.SETTINGS))
-	box.add_child(settings)
-	var quit := _button("QUIT")
-	quit.pressed.connect(func(): get_tree().quit())
-	box.add_child(quit)
-	var version := _label(13, Color(1, 1, 1, 0.35))
-	version.text = "v1.0"
-	version.set_anchors_preset(Control.PRESET_BOTTOM_RIGHT)
-	version.offset_left = -70
-	version.offset_top = -34
-	root.add_child(version)
-	return root
+	subtitle.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.9))
+	subtitle.add_theme_constant_override("outline_size", 6)
+	subtitle.set_anchors_preset(Control.PRESET_CENTER_TOP)
+	subtitle.anchor_left = 0.5
+	subtitle.anchor_right = 0.5
+	subtitle.offset_left = -400
+	subtitle.offset_right = 400
+	subtitle.offset_top = 138
+	root.add_child(subtitle)
 
-func _spacer(h: float) -> Control:
-	var s := Control.new()
-	s.custom_minimum_size = Vector2(0, h)
-	return s
-
-# SELECCIÓN DE PERSONAJE
-
-func _build_character() -> Control:
-	var root := _screen_root()
 	var panel := PanelContainer.new()
 	panel.add_theme_stylebox_override("panel", _panel_style())
+	panel.set_anchors_preset(Control.PRESET_CENTER_BOTTOM)
+	panel.anchor_left = 0.5
+	panel.anchor_right = 0.5
+	panel.offset_left = -260
+	panel.offset_right = 260
+	panel.offset_bottom = -40
+	panel.offset_top = -358
 	root.add_child(panel)
 	var box := VBoxContainer.new()
-	box.add_theme_constant_override("separation", 12)
+	box.add_theme_constant_override("separation", 10)
 	panel.add_child(box)
-	var title := _label(30, GOLD)
-	title.text = "CHOOSE YOUR CHARACTER"
-	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	box.add_child(title)
 
-	var name_row := HBoxContainer.new()
-	name_row.add_theme_constant_override("separation", 10)
-	box.add_child(name_row)
-	var name_lbl := _label(18)
-	name_lbl.text = "YOUR NAME:"
-	name_row.add_child(name_lbl)
+	# Identidad: wallet o guest.
+	var id_row := HBoxContainer.new()
+	id_row.alignment = BoxContainer.ALIGNMENT_CENTER
+	id_row.add_theme_constant_override("separation", 10)
+	box.add_child(id_row)
+	_wallet_btn = _button("CONNECT WALLET", 16)
+	_wallet_btn.custom_minimum_size = Vector2(228, 42)
+	_wallet_btn.pressed.connect(_connect_wallet)
+	id_row.add_child(_wallet_btn)
+	var guest := _button("PLAY AS GUEST", 16)
+	guest.custom_minimum_size = Vector2(228, 42)
+	guest.pressed.connect(_play_as_guest)
+	id_row.add_child(guest)
+
 	_name_edit = LineEdit.new()
 	_name_edit.text = GameSettings.player_name
 	_name_edit.max_length = 18
+	_name_edit.alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_name_edit.add_theme_font_override("font", _font)
-	_name_edit.custom_minimum_size = Vector2(280, 36)
-	name_row.add_child(_name_edit)
+	_name_edit.custom_minimum_size = Vector2(0, 38)
+	box.add_child(_name_edit)
 
-	var carousel := HBoxContainer.new()
-	carousel.add_theme_constant_override("separation", 16)
-	carousel.alignment = BoxContainer.ALIGNMENT_CENTER
-	box.add_child(carousel)
-	var prev := _button("<", 30)
-	prev.custom_minimum_size = Vector2(60, 300)
+	var char_row := HBoxContainer.new()
+	char_row.alignment = BoxContainer.ALIGNMENT_CENTER
+	char_row.add_theme_constant_override("separation", 14)
+	box.add_child(char_row)
+	var prev := _button("<", 20)
+	prev.custom_minimum_size = Vector2(52, 38)
 	prev.pressed.connect(func(): _shift_character(-1))
-	carousel.add_child(prev)
-
-	var vp_container := SubViewportContainer.new()
-	vp_container.stretch = true
-	vp_container.custom_minimum_size = Vector2(380, 400)
-	carousel.add_child(vp_container)
-	_preview_viewport = SubViewport.new()
-	_preview_viewport.own_world_3d = true
-	_preview_viewport.transparent_bg = true
-	_preview_viewport.msaa_3d = Viewport.MSAA_2X
-	vp_container.add_child(_preview_viewport)
-	var cam := Camera3D.new()
-	cam.position = Vector3(0, 1.05, 2.6)
-	cam.look_at_from_position(cam.position, Vector3(0, 0.85, 0))
-	_preview_viewport.add_child(cam)
-	var light := DirectionalLight3D.new()
-	light.rotation_degrees = Vector3(-40, -25, 0)
-	_preview_viewport.add_child(light)
-	var fill := DirectionalLight3D.new()
-	fill.rotation_degrees = Vector3(-20, 140, 0)
-	fill.light_energy = 0.5
-	_preview_viewport.add_child(fill)
-	_preview_rig_holder = Node3D.new()
-	_preview_viewport.add_child(_preview_rig_holder)
-
-	var next := _button(">", 30)
-	next.custom_minimum_size = Vector2(60, 300)
+	char_row.add_child(prev)
+	_char_label = _label(20)
+	_char_label.custom_minimum_size = Vector2(240, 0)
+	_char_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	char_row.add_child(_char_label)
+	var next := _button(">", 20)
+	next.custom_minimum_size = Vector2(52, 38)
 	next.pressed.connect(func(): _shift_character(1))
-	carousel.add_child(next)
+	char_row.add_child(next)
+	_refresh_char_label()
 
-	_char_name_label = _label(26)
-	_char_name_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	box.add_child(_char_name_label)
+	var join := _gold_button("JOIN COMMUNITY MATCH", 22)
+	join.pressed.connect(_join_community)
+	box.add_child(join)
 
-	if not CharacterLib.issues.is_empty():
-		var warn := _label(13, Color(1, 0.75, 0.35, 0.9))
-		warn.text = "⚠ " + "\n⚠ ".join(CharacterLib.issues.slice(0, 3))
-		warn.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		box.add_child(warn)
+	var srv_row := HBoxContainer.new()
+	srv_row.alignment = BoxContainer.ALIGNMENT_CENTER
+	srv_row.add_theme_constant_override("separation", 8)
+	box.add_child(srv_row)
+	var srv_lbl := _label(12, Color(1, 1, 1, 0.5))
+	srv_lbl.text = "SERVER:"
+	srv_row.add_child(srv_lbl)
+	_server_edit = LineEdit.new()
+	_server_edit.text = _default_server_address()
+	_server_edit.add_theme_font_override("font", _font)
+	_server_edit.add_theme_font_size_override("font_size", 12)
+	_server_edit.custom_minimum_size = Vector2(320, 30)
+	srv_row.add_child(_server_edit)
 
-	var buttons := HBoxContainer.new()
-	buttons.alignment = BoxContainer.ALIGNMENT_CENTER
-	buttons.add_theme_constant_override("separation", 16)
-	box.add_child(buttons)
-	var back := _button("BACK", 18)
-	back.custom_minimum_size = Vector2(200, 44)
-	back.pressed.connect(func(): goto(Screen.MAIN))
-	buttons.add_child(back)
-	var go := _button("CONTINUE", 18)
-	go.custom_minimum_size = Vector2(200, 44)
-	go.pressed.connect(_confirm_character)
-	buttons.add_child(go)
+	var small_row := HBoxContainer.new()
+	small_row.alignment = BoxContainer.ALIGNMENT_CENTER
+	small_row.add_theme_constant_override("separation", 10)
+	box.add_child(small_row)
+	var settings := _button("SETTINGS", 13)
+	settings.custom_minimum_size = Vector2(150, 32)
+	settings.pressed.connect(func(): goto(Screen.SETTINGS))
+	small_row.add_child(settings)
+	if not OS.has_feature("web"):
+		var host_btn := _button("HOST LOCAL", 13)
+		host_btn.custom_minimum_size = Vector2(150, 32)
+		host_btn.pressed.connect(_on_host_pressed)
+		small_row.add_child(host_btn)
+		var quit := _button("QUIT", 13)
+		quit.custom_minimum_size = Vector2(150, 32)
+		quit.pressed.connect(func(): get_tree().quit())
+		small_row.add_child(quit)
+
+	var version := _label(12, Color(1, 1, 1, 0.4))
+	version.text = "v1.1"
+	version.set_anchors_preset(Control.PRESET_BOTTOM_RIGHT)
+	version.offset_left = -64
+	version.offset_top = -30
+	root.add_child(version)
 	return root
+
+func _refresh_char_label() -> void:
+	if _char_ids.is_empty():
+		_char_label.text = "NO CHARACTERS"
+		return
+	var id := _char_ids[_char_index]
+	_char_label.text = CharacterLib.display_name(id)
+	_char_label.add_theme_color_override("font_color", CharacterLib.accent_color(id))
 
 func _shift_character(dir: int) -> void:
 	if _char_ids.is_empty():
 		return
 	_char_index = wrapi(_char_index + dir, 0, _char_ids.size())
-	_rebuild_preview()
+	_refresh_char_label()
 
-func _rebuild_preview() -> void:
-	for c in _preview_rig_holder.get_children():
-		c.queue_free()
-	if _char_ids.is_empty():
-		_char_name_label.text = "NO CHARACTERS IN MANIFEST"
+## Identidad wallet (Phantom u otra wallet Solana inyectada; solo web).
+## Sin lógica on-chain: se usa como identidad/nombre.
+func _connect_wallet() -> void:
+	if not OS.has_feature("web"):
+		_show_toast("Wallet connect works in the browser version.")
 		return
-	var id := _char_ids[_char_index]
-	var rig := CharacterLib.build_rig(id)
-	if rig:
-		_preview_rig_holder.add_child(rig)
-		rig.set_state(CharacterRig.State.WALK) # que se lo vea animado
-	_char_name_label.text = CharacterLib.display_name(id)
-	_char_name_label.add_theme_color_override("font_color", CharacterLib.accent_color(id))
+	_wallet_btn.text = "CONNECTING..."
+	JavaScriptBridge.eval("""
+		window._wallet_result = '';
+		(async () => {
+			try {
+				const provider = window.solana || (window.phantom && window.phantom.solana);
+				if (!provider) { window._wallet_result = 'ERR:no_wallet'; return; }
+				const resp = await provider.connect();
+				window._wallet_result = resp.publicKey.toString();
+			} catch (e) { window._wallet_result = 'ERR:' + (e.message || 'rejected'); }
+		})();
+	""", true)
+	_poll_wallet(0)
 
-func _confirm_character() -> void:
+func _poll_wallet(tries: int) -> void:
+	if tries > 40: # ~12s
+		_wallet_btn.text = "CONNECT WALLET"
+		_show_toast("Wallet connection timed out.")
+		return
+	var res = JavaScriptBridge.eval("window._wallet_result", true)
+	var text := String(res) if res != null else ""
+	if text.is_empty():
+		get_tree().create_timer(0.3).timeout.connect(func(): _poll_wallet(tries + 1))
+		return
+	if text.begins_with("ERR:"):
+		_wallet_btn.text = "CONNECT WALLET"
+		if text == "ERR:no_wallet":
+			_show_toast("No wallet found — install Phantom, or play as guest.")
+		else:
+			_show_toast("Wallet connection rejected.")
+		return
+	GameSettings.wallet = text
+	var short := text.substr(0, 4) + ".." + text.substr(text.length() - 4)
+	_name_edit.text = short
+	_wallet_btn.text = "✓ " + short
+	GameSettings.save_settings()
+	_show_toast("Wallet connected.")
+
+func _play_as_guest() -> void:
+	GameSettings.wallet = ""
+	if _name_edit.text.strip_edges().is_empty() or _name_edit.text.contains(".."):
+		_name_edit.text = "Guest_%d" % (randi() % 900 + 100)
+	_show_toast("Playing as guest.")
+
+## Entrar a la partida comunitaria (una sola, infinita, siempre poblada).
+func _join_community() -> void:
 	GameSettings.player_name = _name_edit.text.strip_edges()
 	if GameSettings.player_name.is_empty():
-		GameSettings.player_name = "Player"
+		GameSettings.player_name = "Guest_%d" % (randi() % 900 + 100)
 	if not _char_ids.is_empty():
 		GameSettings.character_id = _char_ids[_char_index]
 	GameSettings.save_settings()
-	goto(Screen.LOBBY)
-
-func _process(delta: float) -> void:
-	if _current == Screen.CHARACTER and _preview_rig_holder:
-		_preview_rig_holder.rotation.y += delta * 0.9
-
-# LOBBY / SALA
-
-func _build_lobby() -> Control:
-	var root := _screen_root()
-	var panel := PanelContainer.new()
-	panel.add_theme_stylebox_override("panel", _panel_style())
-	root.add_child(panel)
-	var box := VBoxContainer.new()
-	box.add_theme_constant_override("separation", 12)
-	box.custom_minimum_size = Vector2(560, 0)
-	panel.add_child(box)
-
-	# Pre-sala: crear / buscar / unirse.
-	_lobby_pre = VBoxContainer.new()
-	_lobby_pre.add_theme_constant_override("separation", 12)
-	box.add_child(_lobby_pre)
-	var title := _label(30, GOLD)
-	title.text = "ONLINE MATCH"
-	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_lobby_pre.add_child(title)
-	var on_web := OS.has_feature("web")
-	if on_web:
-		# En el navegador no se puede abrir un puerto: solo unirse al server.
-		var find_btn := _button("FIND MATCH")
-		find_btn.pressed.connect(_on_join_pressed)
-		_lobby_pre.add_child(find_btn)
-	else:
-		var host_btn := _button("CREATE ROOM")
-		host_btn.pressed.connect(_on_host_pressed)
-		_lobby_pre.add_child(host_btn)
-		var search_btn := _button("FIND MATCH (LAN)")
-		search_btn.pressed.connect(_on_search_pressed)
-		_lobby_pre.add_child(search_btn)
-	_search_results = VBoxContainer.new()
-	_lobby_pre.add_child(_search_results)
-	var ip_row := HBoxContainer.new()
-	ip_row.add_theme_constant_override("separation", 10)
-	_lobby_pre.add_child(ip_row)
-	_ip_edit = LineEdit.new()
-	_ip_edit.text = _default_server_address()
-	_ip_edit.add_theme_font_override("font", _font)
-	_ip_edit.custom_minimum_size = Vector2(240, 40)
-	ip_row.add_child(_ip_edit)
-	var join_btn := _button("JOIN BY IP", 18)
-	join_btn.custom_minimum_size = Vector2(220, 40)
-	join_btn.pressed.connect(_on_join_pressed)
-	ip_row.add_child(join_btn)
-	var back := _button("BACK", 18)
-	back.pressed.connect(func(): goto(Screen.CHARACTER))
-	_lobby_pre.add_child(back)
-
-	# Sala armada: lista de jugadores conectados.
-	_lobby_room = VBoxContainer.new()
-	_lobby_room.add_theme_constant_override("separation", 12)
-	_lobby_room.visible = false
-	box.add_child(_lobby_room)
-	_lobby_status = _label(26, GOLD)
-	_lobby_status.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_lobby_room.add_child(_lobby_status)
-	_lobby_players_box = VBoxContainer.new()
-	_lobby_players_box.add_theme_constant_override("separation", 6)
-	_lobby_room.add_child(_lobby_players_box)
-	_lobby_start_btn = _button("START MATCH")
-	_lobby_start_btn.pressed.connect(func(): Net.request_start())
-	_lobby_room.add_child(_lobby_start_btn)
-	var leave_btn := _button("LEAVE ROOM", 18)
-	leave_btn.pressed.connect(_leave_room)
-	_lobby_room.add_child(leave_btn)
-	return root
-
-func _default_server_address() -> String:
-	# Prioridad: último server usado > host de la página (web) > localhost.
-	if not GameSettings.last_server.is_empty():
-		return GameSettings.last_server
-	if OS.has_feature("web"):
-		var host_str = JavaScriptBridge.eval("location.hostname", true)
-		if host_str != null and not String(host_str).is_empty():
-			return String(host_str)
-	return "127.0.0.1"
-
-func _show_pre_lobby() -> void:
-	_lobby_pre.visible = true
-	_lobby_room.visible = false
-
-func _show_room() -> void:
-	_lobby_pre.visible = false
-	_lobby_room.visible = true
-	_refresh_lobby()
+	_join_flow(_server_edit.text)
 
 func _on_host_pressed() -> void:
+	GameSettings.player_name = _name_edit.text.strip_edges()
+	if not _char_ids.is_empty():
+		GameSettings.character_id = _char_ids[_char_index]
+	GameSettings.save_settings()
 	var err := Net.host()
 	if not err.is_empty():
 		_show_toast(err)
 		return
-	# Sin lobby: el host entra a jugar ya, con bots hasta que lleguen amigos.
 	Net.begin_infinite()
 
-## Entrar a un server: guardar la dirección y cargar la Arena; la conexión
-## se hace desde adentro (necesario para el drop-in).
+## Guardar la dirección y cargar la Arena; la conexión se hace desde adentro
+## (necesario para que el drop-in reciba el estado de la partida en curso).
 func _join_flow(address: String) -> void:
 	address = address.strip_edges()
 	if address.is_empty():
@@ -454,73 +398,25 @@ func _join_flow(address: String) -> void:
 	Net.pending_join = address
 	Transition.change_scene(Net.ARENA_SCENE)
 
-func _on_join_pressed() -> void:
-	_join_flow(_ip_edit.text)
-
-func _on_search_pressed() -> void:
-	for c in _search_results.get_children():
-		c.queue_free()
-	var status := _label(16, Color(1, 1, 1, 0.6))
-	status.text = "Searching for rooms on the local network..."
-	status.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_search_results.add_child(status)
-	Net.search_lan()
-
-func _on_lan_results(hosts: Array) -> void:
-	for c in _search_results.get_children():
-		c.queue_free()
-	if hosts.is_empty():
-		var none := _label(16, Color(1, 1, 1, 0.6))
-		none.text = "No rooms found."
-		none.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		_search_results.add_child(none)
-		return
-	for h in hosts:
-		var b := _button("JOIN %s'S ROOM (%s)" % [String(h["name"]).to_upper(), h["ip"]], 16)
-		b.pressed.connect(func(): _join_flow(String(h["ip"])))
-		_search_results.add_child(b)
-
-func _refresh_lobby() -> void:
-	if _current != Screen.LOBBY or not _lobby_room.visible:
-		return
-	for c in _lobby_players_box.get_children():
-		c.queue_free()
-	var count := Net.players.size()
-	_lobby_status.text = "ROOM — %d player%s" % [count, "" if count == 1 else "s"]
-	for id in Net.players:
-		var p: Dictionary = Net.players[id]
-		var row := _label(18)
-		var tags := ""
-		if id == Net.leader_id and not Net.dedicated:
-			tags += "  [LEADER]"
-		if id == Net.my_id():
-			tags += "  (you)"
-		row.text = "• %s — %s%s" % [p["name"], CharacterLib.display_name(String(p["character"])), tags]
-		_lobby_players_box.add_child(row)
-	_lobby_start_btn.visible = Net.i_am_leader()
-	if not Net.i_am_leader():
-		var waiting := _label(15, Color(1, 1, 1, 0.5))
-		waiting.text = "Waiting for the leader to start the match..."
-		_lobby_players_box.add_child(waiting)
-
-func _leave_room() -> void:
-	Net.leave()
-	_show_pre_lobby()
-
-func _on_session_closed(reason: String) -> void:
-	_show_toast(reason)
-	if _current == Screen.LOBBY:
-		_show_pre_lobby()
-	elif _current == Screen.RESULTS:
-		_fill_results()
+func _default_server_address() -> String:
+	if not GameSettings.last_server.is_empty():
+		return GameSettings.last_server
+	if OS.has_feature("web"):
+		var host_str = JavaScriptBridge.eval("location.hostname", true)
+		if host_str != null and not String(host_str).is_empty():
+			return String(host_str)
+	return "127.0.0.1"
 
 # AJUSTES
 
 func _build_settings() -> Control:
 	var root := _screen_root()
+	var center := CenterContainer.new()
+	center.set_anchors_preset(Control.PRESET_FULL_RECT)
+	root.add_child(center)
 	var panel := PanelContainer.new()
 	panel.add_theme_stylebox_override("panel", _panel_style())
-	root.add_child(panel)
+	center.add_child(panel)
 	var box := VBoxContainer.new()
 	box.add_theme_constant_override("separation", 10)
 	box.custom_minimum_size = Vector2(620, 0)
@@ -530,7 +426,6 @@ func _build_settings() -> Control:
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	box.add_child(title)
 
-	# Sensibilidad.
 	box.add_child(_settings_row_label("MOUSE SENSITIVITY"))
 	var sens := HSlider.new()
 	sens.min_value = 0.2
@@ -543,7 +438,6 @@ func _build_settings() -> Control:
 		GameSettings.save_settings())
 	box.add_child(sens)
 
-	# Volumen.
 	box.add_child(_settings_row_label("VOLUME"))
 	var vol := HSlider.new()
 	vol.min_value = 0
@@ -557,7 +451,6 @@ func _build_settings() -> Control:
 		GameSettings.save_settings())
 	box.add_child(vol)
 
-	# Calidad gráfica.
 	box.add_child(_settings_row_label("GRAPHICS QUALITY"))
 	var quality := OptionButton.new()
 	quality.add_theme_font_override("font", _font)
@@ -570,7 +463,6 @@ func _build_settings() -> Control:
 		GameSettings.save_settings())
 	box.add_child(quality)
 
-	# Campo de visión.
 	box.add_child(_settings_row_label("FIELD OF VIEW (FOV)"))
 	var fov := HSlider.new()
 	fov.min_value = 70
@@ -583,7 +475,6 @@ func _build_settings() -> Control:
 		GameSettings.save_settings())
 	box.add_child(fov)
 
-	# Ping/FPS en el HUD.
 	var stats := CheckButton.new()
 	stats.text = "SHOW PING / FPS"
 	stats.add_theme_font_override("font", _font)
@@ -594,10 +485,9 @@ func _build_settings() -> Control:
 		GameSettings.save_settings())
 	box.add_child(stats)
 
-	# Controles.
 	box.add_child(_settings_row_label("CONTROLS (click to rebind)"))
 	var grid := GridContainer.new()
-	grid.columns = 5
+	grid.columns = 4
 	grid.add_theme_constant_override("h_separation", 14)
 	grid.add_theme_constant_override("v_separation", 6)
 	box.add_child(grid)
@@ -627,7 +517,6 @@ func _settings_row_label(text: String) -> Label:
 	return l
 
 func _begin_rebind(action: String) -> void:
-	# Cancelar cualquier rebind previo colgado.
 	if not _awaiting_rebind.is_empty() and _rebind_buttons.has(_awaiting_rebind):
 		_rebind_buttons[_awaiting_rebind].text = GameSettings.bind_label(_awaiting_rebind)
 	_awaiting_rebind = action
@@ -635,16 +524,9 @@ func _begin_rebind(action: String) -> void:
 
 func _input(event: InputEvent) -> void:
 	if _awaiting_rebind.is_empty():
-		if event.is_action_pressed("ui_cancel"):
-			match _current:
-				Screen.CHARACTER:
-					goto(Screen.MAIN)
-				Screen.SETTINGS:
-					GameSettings.save_settings()
-					goto(Screen.MAIN)
-				Screen.LOBBY:
-					if not Net.session_active():
-						goto(Screen.CHARACTER)
+		if event.is_action_pressed("ui_cancel") and _current == Screen.SETTINGS:
+			GameSettings.save_settings()
+			goto(Screen.MAIN)
 		return
 	if event is InputEventKey and event.is_pressed():
 		var key_event := event as InputEventKey
@@ -654,13 +536,16 @@ func _input(event: InputEvent) -> void:
 		_awaiting_rebind = ""
 		get_viewport().set_input_as_handled()
 
-# FIN DE RONDA
+# RESULTADOS (solo para salas por rondas; la comunitaria nunca termina)
 
 func _build_results() -> Control:
 	var root := _screen_root()
+	var center := CenterContainer.new()
+	center.set_anchors_preset(Control.PRESET_FULL_RECT)
+	root.add_child(center)
 	var panel := PanelContainer.new()
 	panel.add_theme_stylebox_override("panel", _panel_style(GOLD))
-	root.add_child(panel)
+	center.add_child(panel)
 	_results_box = VBoxContainer.new()
 	_results_box.add_theme_constant_override("separation", 10)
 	_results_box.custom_minimum_size = Vector2(640, 0)
@@ -678,68 +563,36 @@ func _fill_results() -> void:
 	var winner_id: int = res["winner"]
 	var my_id: int = res["my_id"]
 	var ids := Net.sorted_ids(final_players)
-
 	var title := _label(34, GOLD)
 	title.text = "ROUND OVER"
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_results_box.add_child(title)
 	if final_players.has(winner_id):
-		var wname: String = final_players[winner_id]["name"]
 		var win := _label(26)
-		win.text = "🏆 WINNER: %s (%d kills)" % [wname, int(final_players[winner_id]["kills"])]
+		win.text = "🏆 WINNER: %s (%d kills)" % [final_players[winner_id]["name"], int(final_players[winner_id]["kills"])]
 		win.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		_results_box.add_child(win)
-	if final_players.has(my_id):
-		var my_rank := ids.find(my_id) + 1
-		var me: Dictionary = final_players[my_id]
-		var mine := _label(18, Color(1, 1, 1, 0.75))
-		mine.text = "You finished #%d — %d kills / %d deaths" % [my_rank, int(me["kills"]), int(me["deaths"])]
-		mine.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		_results_box.add_child(mine)
-
 	var grid := GridContainer.new()
-	grid.columns = 5
+	grid.columns = 4
 	grid.add_theme_constant_override("h_separation", 30)
-	grid.add_theme_constant_override("v_separation", 4)
 	_results_box.add_child(grid)
-	for header in ["PLAYER", "CHARACTER", "KILLS", "DEATHS", "SCORE"]:
+	for header in ["PLAYER", "KILLS", "DEATHS", "SCORE"]:
 		var h := _label(15, Color(1, 1, 1, 0.55))
 		h.text = header
 		grid.add_child(h)
 	var rank := 0
 	for id in ids:
 		rank += 1
-		var p: Dictionary = final_players[id]
-		var color := Color.WHITE
-		if id == winner_id:
-			color = GOLD
-		elif id == my_id:
-			color = BLUE
-		for text in ["%d. %s%s" % [rank, p["name"], " 🏆" if id == winner_id else ""],
-				CharacterLib.display_name(String(p["character"])),
-				str(int(p["kills"])), str(int(p["deaths"])), str(int(p.get("score", 0)))]:
+		var pl: Dictionary = final_players[id]
+		var color := GOLD if id == winner_id else (BLUE if id == my_id else Color.WHITE)
+		for text in ["%d. %s" % [rank, pl["name"]], str(int(pl["kills"])),
+				str(int(pl["deaths"])), str(int(pl.get("score", 0)))]:
 			var cell := _label(18, color)
 			cell.text = String(text)
 			grid.add_child(cell)
-
-	_results_box.add_child(_spacer(10))
-	var buttons := HBoxContainer.new()
-	buttons.alignment = BoxContainer.ALIGNMENT_CENTER
-	buttons.add_theme_constant_override("separation", 16)
-	_results_box.add_child(buttons)
-	if Net.i_am_leader():
-		var rematch := _button("REMATCH", 20)
-		rematch.custom_minimum_size = Vector2(240, 46)
-		rematch.pressed.connect(func(): Net.request_start())
-		buttons.add_child(rematch)
-	elif Net.session_active():
-		var waiting := _label(16, Color(1, 1, 1, 0.6))
-		waiting.text = "The leader can start a rematch..."
-		buttons.add_child(waiting)
 	var to_menu := _button("BACK TO MENU", 20)
-	to_menu.custom_minimum_size = Vector2(240, 46)
 	to_menu.pressed.connect(func():
 		Net.leave()
 		Net.last_results = {}
 		goto(Screen.MAIN))
-	buttons.add_child(to_menu)
+	_results_box.add_child(to_menu)
