@@ -22,8 +22,7 @@ const HEADSHOT_MULT := 1.5
 const INTERP_SPEED := 14.0
 const SNAP_DISTANCE := 6.0
 
-const IMPACT_VFX := "res://Weapons/VFX/HitImpacts/VFXScenes/HitImpactVFX.tscn"
-const BLOOD_VFX := "res://Weapons/VFX/HitImpacts/VFXScenes/BloodSpillVFX.tscn"
+const BLOOD_VFX := preload("res://Weapons/VFX/HitImpacts/VFXScenes/BloodSpillVFX.tscn")
 
 # Datos de spawn (los setea la spawn_function de la Arena en todos los peers).
 var peer_id := 1
@@ -48,11 +47,17 @@ var _srv_last_fire := -10.0
 var _srv_protect_until := 0.0
 var _srv_unlocked: Array[bool] = []
 
-# IA de bots (solo server).
+# IA de bots (solo server). El "skill" varía por bot para que se sientan
+# personas distintas: puntería, cadencia y reflejos diferentes.
 var _bot_windex := 1
 var _bot_target: NetPlayer
 var _bot_retarget_at := 0.0
 var _bot_strafe_dir := 1.0
+var _bot_jitter := 2.5
+var _bot_cd_mult := 1.4
+var _bot_turn := 5.0
+var _bot_roam := Vector3.ZERO
+var _bot_roam_until := 0.0
 
 var _is_crouching := false
 var _weapons: NetWeapons
@@ -61,6 +66,13 @@ var _hand_prop: Node3D
 var _hand_meshes: Array[Node3D] = []
 var _auto_seed := 0.0
 var _bob_time := 0.0
+var _ads := false
+var _fov_kick := 0.0
+var _step_accum := 0.0
+var _remote_step_timer := 0.0
+var _hand_flash: Node3D
+# Para el radar: último momento en que este jugador disparó (visto localmente).
+var radar_ping_at := -10.0
 
 @onready var head: Node3D = $Head
 @onready var camera: Camera3D = $Head/Camera3D
@@ -84,6 +96,11 @@ func _ready() -> void:
 		_bot_windex = [1, 2, 4][absi(peer_id) % 3] # pistola / MAC-10 / AK-47
 		weapon_index = _bot_windex
 		_auto_seed = randf() * TAU
+		var rng := RandomNumberGenerator.new()
+		rng.seed = absi(peer_id) * 7919
+		_bot_jitter = rng.randf_range(1.2, 4.5)
+		_bot_cd_mult = rng.randf_range(1.0, 2.0)
+		_bot_turn = rng.randf_range(3.0, 6.5)
 	elif is_local():
 		camera.current = true
 		camera.fov = GameSettings.fov
@@ -194,6 +211,10 @@ func _attach_hand_prop() -> void:
 		prop.visible = false
 		_hand_prop.add_child(prop)
 		_hand_meshes.append(prop)
+	# Fogonazo en la mano para que los disparos ajenos se VEAN.
+	_hand_flash = NetWeapons.MiniFlash.new()
+	_hand_flash.position = Vector3(0, 0.25, 0)
+	_hand_prop.add_child(_hand_flash)
 
 func _update_hand_prop() -> void:
 	for i in _hand_meshes.size():
@@ -215,10 +236,17 @@ func _input(event: InputEvent) -> void:
 			if mhud == null or not mhud.is_paused():
 				Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
 		return
+	var mhud_chat := get_tree().get_first_node_in_group("match-ui")
+	if mhud_chat and mhud_chat.is_chat_open():
+		return
 	if event is InputEventMouseMotion:
 		var sens: float = GameSettings.mouse_sensitivity()
+		if _ads:
+			sens *= 0.35 if _is_scoped() else 0.7
 		rotate_y(-event.relative.x * sens)
 		head.rotation.x = clamp(head.rotation.x - event.relative.y * sens, -PI / 2, PI / 2)
+		if _weapons:
+			_weapons.add_sway(event.relative)
 	elif event.is_action_pressed("fire"):
 		_do_fire()
 	elif event.is_action_pressed("reload"):
@@ -306,7 +334,19 @@ func _local_move(delta: float) -> void:
 	var direction := (transform.basis * Vector3(input_dir.x, 0, input_dir.y)).normalized()
 	var sprinting := Input.is_action_pressed("sprint") and is_on_floor() \
 		and input_dir.y < 0 and not _is_crouching
-	camera.fov = lerpf(camera.fov, GameSettings.fov + (10.0 if sprinting else 0.0), 10.0 * delta)
+	# ADS (click derecho): zoom suave; la AWP tiene mira 4x con overlay.
+	_ads = Input.is_action_pressed("aim") and _weapons != null \
+		and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED
+	if _weapons:
+		_weapons.ads = _ads and not _is_scoped() # la AWP usa overlay, no viewmodel
+	var target_fov := GameSettings.fov + (10.0 if sprinting else 0.0)
+	if _ads:
+		target_fov *= 0.25 if _is_scoped() else 0.72
+	_fov_kick = lerpf(_fov_kick, 0.0, 8.0 * delta)
+	camera.fov = lerpf(camera.fov, target_fov + _fov_kick, 12.0 * delta)
+	var mhud := get_tree().get_first_node_in_group("match-ui")
+	if mhud:
+		mhud.set_scope(_ads and _is_scoped())
 	var speed := WALK_SPEED
 	if sprinting:
 		speed = SPRINT_SPEED
@@ -325,12 +365,19 @@ func _local_move(delta: float) -> void:
 	_update_anim_state(direction, sprinting)
 
 ## Head bob sutil + altura de agachado, todo suavizado.
+func _is_scoped() -> bool:
+	return _weapons != null and _weapons.current_index == 5 # AWP
+
 func _head_feel(delta: float, direction: Vector3, sprinting: bool) -> void:
 	var target_y := 0.95 if _is_crouching else 1.55
 	var bob := 0.0
 	if is_on_floor() and direction.length() > 0.1:
 		_bob_time += delta * (11.0 if sprinting else 8.0)
 		bob = sin(_bob_time) * 0.045
+		_step_accum += velocity.length() * delta
+		if _step_accum > 2.4:
+			_step_accum = 0.0
+			Sfx.play("step", -16.0, randf_range(0.9, 1.1))
 	head.position.y = lerpf(head.position.y, target_y + bob, 12.0 * delta)
 
 func _update_anim_state(direction: Vector3, sprinting: bool) -> void:
@@ -348,6 +395,12 @@ func _update_anim_state(direction: Vector3, sprinting: bool) -> void:
 func _drive_rig() -> void:
 	if _rig == null:
 		return
+	# Pasos de los demás jugadores (sonido posicional).
+	if not is_local() and (anim_state == Anim.WALK or anim_state == Anim.RUN):
+		_remote_step_timer -= get_process_delta_time()
+		if _remote_step_timer <= 0.0:
+			_remote_step_timer = 0.34 if anim_state == Anim.RUN else 0.45
+			Sfx.play3d("step", global_position, -14.0)
 	match anim_state:
 		Anim.DEAD:
 			_rig.set_state(CharacterRig.State.DEAD)
@@ -381,18 +434,39 @@ func _bot_physics(delta: float) -> void:
 		_bot_strafe_dir = 1.0 if randf() > 0.5 else -1.0
 	if not is_on_floor():
 		velocity.y -= GRAVITY * delta
+	var has_los := _bot_target != null and _bot_has_los(_bot_target)
 	var move_intent := Vector3.ZERO
-	if _bot_target:
+	if _bot_target and has_los:
 		var to := _bot_target.global_position - global_position
 		to.y = 0
 		var dist := to.length()
 		if dist > 0.5:
-			rotation.y = lerp_angle(rotation.y, atan2(-to.x, -to.z), 5.0 * delta)
+			rotation.y = lerp_angle(rotation.y, atan2(-to.x, -to.z), _bot_turn * delta)
 		# Acercarse si está lejos, mantener distancia media y strafear.
 		var fwd := -1.0 if dist > 9.0 else (0.4 if dist < 4.0 else -0.25)
 		move_intent = Vector3(_bot_strafe_dir * 0.8, 0, fwd)
 	else:
-		move_intent = Vector3(sin(t * 0.8), 0, -0.7)
+		# Sin objetivo a la vista: patrullar hacia un punto del mapa.
+		if t > _bot_roam_until or global_position.distance_to(_bot_roam) < 2.5:
+			var arena := get_tree().current_scene
+			if arena and "SPAWN_POINTS" in arena:
+				_bot_roam = arena.SPAWN_POINTS[randi() % arena.SPAWN_POINTS.size()]
+			else:
+				_bot_roam = Vector3(randf_range(-16, 16), 1, randf_range(-16, 16))
+			_bot_roam_until = t + randf_range(5.0, 9.0)
+		var to_roam := _bot_roam - global_position
+		to_roam.y = 0
+		if to_roam.length() > 0.5:
+			rotation.y = lerp_angle(rotation.y, atan2(-to_roam.x, -to_roam.z), _bot_turn * delta)
+		move_intent = Vector3(0, 0, -1)
+	# Esquivar paredes: si hay algo justo adelante, girar.
+	var space := get_world_3d().direct_space_state
+	var fwd_dir := -transform.basis.z
+	var wall_query := PhysicsRayQueryParameters3D.create(
+		global_position + Vector3.UP, global_position + Vector3.UP + fwd_dir * 1.6)
+	wall_query.exclude = [get_rid()]
+	if not space.intersect_ray(wall_query).is_empty():
+		rotation.y += _bot_strafe_dir * 2.2 * delta
 	var direction := (transform.basis * move_intent).normalized()
 	velocity.x = direction.x * WALK_SPEED
 	velocity.z = direction.z * WALK_SPEED
@@ -405,13 +479,13 @@ func _bot_physics(delta: float) -> void:
 		_bot_strafe_dir *= -1.0
 	_update_anim_state(direction, false)
 	weapon_index = _bot_windex
-	# Disparo con puntería imperfecta, SOLO si tiene línea de visión.
-	if _bot_target and not Net.fire_locked() and _bot_has_los(_bot_target):
+	# Disparo con puntería imperfecta (skill del bot), SOLO con línea de visión.
+	if _bot_target and has_los and not Net.fire_locked():
 		var eye := global_position + Vector3.UP * 1.55
 		var aim := (_bot_target.global_position + Vector3.UP * 1.1 - eye).normalized()
-		var jitter := deg_to_rad(randf_range(0.0, 2.6))
+		var jitter := deg_to_rad(randf_range(0.0, _bot_jitter))
 		aim = aim.rotated(Vector3.UP, randf_range(-jitter, jitter))
-		if _now() - _srv_last_fire >= WeaponDefs.cooldown_for(_bot_windex) * randf_range(1.1, 1.7):
+		if _now() - _srv_last_fire >= WeaponDefs.cooldown_for(_bot_windex) * _bot_cd_mult * randf_range(0.9, 1.3):
 			_srv_last_fire = _now()
 			_srv_execute_fire(_bot_windex, eye, aim)
 
@@ -552,7 +626,11 @@ func _srv_apply_damage(amount: int, attacker_id: int, headshot := false) -> void
 	if _now() < _srv_protect_until:
 		return # protección de spawn
 	_srv_health -= amount
-	_send_owner_health()
+	var from_pos := Vector3.INF
+	var attacker_node := _find_player(attacker_id)
+	if attacker_node:
+		from_pos = attacker_node.global_position
+	_send_owner_health(from_pos)
 	# Hitmarker para el atacante (si es humano).
 	if attacker_id > 0:
 		var attacker := _find_player(attacker_id)
@@ -564,13 +642,13 @@ func _srv_apply_damage(amount: int, attacker_id: int, headshot := false) -> void
 	if _srv_health <= 0:
 		_srv_die(attacker_id, headshot)
 
-func _send_owner_health() -> void:
+func _send_owner_health(from_pos := Vector3.INF) -> void:
 	if is_bot:
 		return
 	if peer_id == 1:
-		_local_set_health(_srv_health)
+		_local_set_health(_srv_health, from_pos)
 	else:
-		cl_health.rpc_id(peer_id, _srv_health)
+		cl_health.rpc_id(peer_id, _srv_health, from_pos)
 
 func _srv_die(attacker_id: int, headshot := false) -> void:
 	_srv_dead = true
@@ -641,10 +719,10 @@ func _srv_respawn() -> void:
 	_local_respawn(pos)
 
 @rpc("authority", "reliable")
-func cl_health(value: int) -> void:
-	_local_set_health(value)
+func cl_health(value: int, from_pos := Vector3.INF) -> void:
+	_local_set_health(value, from_pos)
 
-func _local_set_health(value: int) -> void:
+func _local_set_health(value: int, from_pos := Vector3.INF) -> void:
 	var took_damage := value < health
 	health = value
 	if is_local():
@@ -656,7 +734,13 @@ func _local_set_health(value: int) -> void:
 			mhud.update_health_fx(max(health, 0), MAX_HEALTH)
 			if took_damage:
 				mhud.flash_damage()
+				if from_pos.is_finite():
+					# Ángulo del atacante relativo a donde mirás (0 = adelante).
+					var to := from_pos - global_position
+					var rel := atan2(to.x, -to.z) + rotation.y
+					mhud.show_damage_dir(rel)
 		if took_damage:
+			_fov_kick = 5.0
 			Sfx.play("hurt", -6.0)
 
 @rpc("authority", "reliable")
@@ -762,9 +846,12 @@ func cl_fire_fx(windex: int, origin: Vector3, fx: Array) -> void:
 	_apply_fire_fx(windex, origin, fx)
 
 func _apply_fire_fx(windex: int, origin: Vector3, fx: Array) -> void:
-	# Sonido posicional del disparo ajeno (el propio suena en try_fire).
+	radar_ping_at = _now()
+	# Sonido posicional + fogonazo en la mano del que dispara (si no sos vos).
 	if not is_local():
 		Sfx.play3d(String(WeaponDefs.get_def(windex)["sfx"]), origin, -4.0)
+		if _hand_flash:
+			_hand_flash.start()
 	var too_many_vfx: bool = get_tree().get_nodes_in_group("impact-vfx").size() > 8
 	for hit in fx:
 		var target: Vector3 = hit["p"]
@@ -772,17 +859,40 @@ func _apply_fire_fx(windex: int, origin: Vector3, fx: Array) -> void:
 			_spawn_tracer(origin, target)
 		if bool(hit.get("miss", false)) or too_many_vfx:
 			continue
-		var scene_path: String = BLOOD_VFX if hit["blood"] else IMPACT_VFX
-		var scene: PackedScene = load(scene_path)
-		if scene == null:
-			continue
-		var inst: Node3D = scene.instantiate()
-		inst.add_to_group("impact-vfx")
-		get_tree().root.add_child(inst)
-		inst.global_position = target
-		var normal: Vector3 = hit["n"]
-		var up := Vector3.UP if absf(normal.dot(Vector3.UP)) < 0.99 else Vector3.FORWARD
-		inst.look_at(target + normal, up)
+		if hit["blood"]:
+			var inst: Node3D = BLOOD_VFX.instantiate()
+			inst.add_to_group("impact-vfx")
+			get_tree().root.add_child(inst)
+			inst.global_position = target
+			var normal: Vector3 = hit["n"]
+			var up := Vector3.UP if absf(normal.dot(Vector3.UP)) < 0.99 else Vector3.FORWARD
+			inst.look_at(target + normal, up)
+		else:
+			_spawn_puff(target)
+
+## Impacto en superficie: puff chico emisivo que crece y se esfuma (limpio,
+## reemplaza al humo gigante del demo).
+func _spawn_puff(pos: Vector3) -> void:
+	var mi := MeshInstance3D.new()
+	var sphere := SphereMesh.new()
+	sphere.radius = 0.06
+	sphere.height = 0.12
+	sphere.radial_segments = 8
+	sphere.rings = 4
+	var mat := StandardMaterial3D.new()
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.albedo_color = Color(0.95, 0.9, 0.75, 0.85)
+	sphere.material = mat
+	mi.mesh = sphere
+	mi.add_to_group("impact-vfx")
+	get_tree().root.add_child(mi)
+	mi.global_position = pos
+	var tw := mi.create_tween()
+	tw.set_parallel(true)
+	tw.tween_property(mi, "scale", Vector3.ONE * 3.2, 0.25)
+	tw.tween_property(mat, "albedo_color:a", 0.0, 0.25)
+	tw.chain().tween_callback(mi.queue_free)
 
 func _spawn_tracer(from: Vector3, to: Vector3) -> void:
 	var dir := to - from

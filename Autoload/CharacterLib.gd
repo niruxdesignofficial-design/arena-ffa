@@ -48,7 +48,7 @@ func _load_manifest() -> void:
 	if characters.is_empty():
 		_issue("No valid characters in the manifest.")
 	for i in issues:
-		push_warning("[CharacterLib] " + i)
+		print("[CharacterLib] ", i) # visibles también en la pantalla de selección
 
 func _issue(text: String) -> void:
 	issues.append(text)

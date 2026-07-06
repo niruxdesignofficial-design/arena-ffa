@@ -209,6 +209,12 @@ func _build_main() -> Control:
 	var quit := _button("QUIT")
 	quit.pressed.connect(func(): get_tree().quit())
 	box.add_child(quit)
+	var version := _label(13, Color(1, 1, 1, 0.35))
+	version.text = "v1.0"
+	version.set_anchors_preset(Control.PRESET_BOTTOM_RIGHT)
+	version.offset_left = -70
+	version.offset_top = -34
+	root.add_child(version)
 	return root
 
 func _spacer(h: float) -> Control:
@@ -572,6 +578,17 @@ func _build_settings() -> Control:
 		GameSettings.save_settings())
 	box.add_child(fov)
 
+	# Ping/FPS en el HUD.
+	var stats := CheckButton.new()
+	stats.text = "SHOW PING / FPS"
+	stats.add_theme_font_override("font", _font)
+	stats.add_theme_font_size_override("font_size", 15)
+	stats.button_pressed = GameSettings.show_stats
+	stats.toggled.connect(func(v):
+		GameSettings.show_stats = v
+		GameSettings.save_settings())
+	box.add_child(stats)
+
 	# Controles.
 	box.add_child(_settings_row_label("CONTROLS (click to rebind)"))
 	var grid := GridContainer.new()
@@ -613,6 +630,16 @@ func _begin_rebind(action: String) -> void:
 
 func _input(event: InputEvent) -> void:
 	if _awaiting_rebind.is_empty():
+		if event.is_action_pressed("ui_cancel"):
+			match _current:
+				Screen.CHARACTER:
+					goto(Screen.MAIN)
+				Screen.SETTINGS:
+					GameSettings.save_settings()
+					goto(Screen.MAIN)
+				Screen.LOBBY:
+					if not Net.session_active():
+						goto(Screen.CHARACTER)
 		return
 	if event is InputEventKey and event.is_pressed():
 		var key_event := event as InputEventKey

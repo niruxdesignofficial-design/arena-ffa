@@ -40,9 +40,16 @@ It also runs **native**: open the project with Godot and use CREATE ROOM
 - **Damage falls off** with distance past half of each gun's range.
 - **Kills heal you +25 HP.** Medkits (+40) and spinning ammo boxes
   respawn around the map; climb the stacked crates to reach rooftops.
-- Tab = live scoreboard (server-authoritative: clients never decide kills,
-  score or order). ESC = pause. All sounds are 100% procedural (no assets).
+- **Right-click to aim** (ADS); the AWP has a real 4x scope overlay.
+- **Enter = text chat** with everyone in the match.
+- **Radar** (bottom-left): nearby enemies, and anyone who just fired.
+- Kill streaks are announced (DOUBLE KILL, TRIPLE KILL, RAMPAGE...).
+- Damage direction indicators show where you're being shot from.
+- Tab = live scoreboard with the **ALL-TIME top-3** footer (persisted on
+  the server across dashboard resets). ESC = pause (with quick settings).
 - Score: 100 per kill, +50 for headshots (SCORE column in the scoreboard).
+- Ping + FPS shown in the corner (toggle in Settings). All sounds are
+  100% procedural — footsteps included.
 
 ## Adding characters
 

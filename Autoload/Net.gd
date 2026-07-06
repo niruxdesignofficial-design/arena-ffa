@@ -14,6 +14,9 @@ signal lobby_joined
 signal lan_search_done(hosts: Array)
 signal countdown_started(seconds: float)
 signal round_reset(winner_name: String, winner_kills: int)
+signal chat_message(pname: String, text: String)
+signal streak_announce(title: String)
+signal hall_changed
 
 const PORT := 8910
 const DISCOVERY_PORT := 8911
@@ -50,9 +53,21 @@ const HISTORY_PATH := "user://match_history.json"
 # guarda el resultado en disco y el scoreboard arranca de cero.
 var infinite := false
 
+const STREAK_TITLES := {2: "DOUBLE KILL", 3: "TRIPLE KILL", 5: "RAMPAGE", 7: "UNSTOPPABLE"}
+const BOT_CHAT_KILLED := ["lag", "?", "nice one", "bruh", "wtf", "ok ok"]
+const BOT_CHAT_STREAK := ["ez", "too easy", ":)"]
+const BOT_CHAT_RESET := ["gg", "gg wp", "close one", "again!"]
+
+# Ping medido contra el server (ms) y top histórico (hall of fame).
+var ping_ms := 0
+var hall_top: Array = [] # [{name, kills}] top-3 all-time
+
 # Momento (reloj local) hasta el que el fuego está bloqueado (countdown).
 var _fire_unlock_at := 0.0
 var _next_bot_id := 0
+var _awaiting_connect := false
+var _ping_accum := 0.0
+var _chat_last_at := {}
 
 var _discovery := PacketPeerUDP.new()
 var _discovery_active := false
@@ -72,6 +87,26 @@ func _ready() -> void:
 func _process(delta: float) -> void:
 	_poll_discovery()
 	_tick_round(delta)
+	_tick_ping(delta)
+
+# PING (cliente -> server -> cliente)
+
+func _tick_ping(delta: float) -> void:
+	if not session_active() or multiplayer.is_server():
+		return
+	_ping_accum += delta
+	if _ping_accum >= 2.0:
+		_ping_accum = 0.0
+		srv_ping.rpc_id(1, Time.get_ticks_msec())
+
+@rpc("any_peer", "unreliable")
+func srv_ping(t: int) -> void:
+	if multiplayer.is_server():
+		cl_pong.rpc_id(multiplayer.get_remote_sender_id(), t)
+
+@rpc("authority", "unreliable")
+func cl_pong(t: int) -> void:
+	ping_ms = maxi(0, Time.get_ticks_msec() - t)
 
 # SESIÓN
 
@@ -148,6 +183,13 @@ func join(address: String) -> String:
 	if peer.create_client(url) != OK:
 		return "Invalid address"
 	multiplayer.multiplayer_peer = peer
+	_awaiting_connect = true
+	# Si en 8s no conectó, avisar en vez de dejar "Connecting..." infinito.
+	get_tree().create_timer(8.0).timeout.connect(func():
+		if _awaiting_connect:
+			_awaiting_connect = false
+			leave()
+			session_closed.emit("Couldn't reach the server."))
 	return ""
 
 func leave() -> void:
@@ -175,6 +217,10 @@ func _on_peer_connected(id: int) -> void:
 
 func _on_peer_disconnected(id: int) -> void:
 	if is_session_server() and players.has(id):
+		if infinite:
+			var leave_feed := "%s left the match" % players[id]["name"]
+			cl_kill_feed.rpc(leave_feed)
+			kill_feed.emit(leave_feed)
 		players.erase(id)
 		_arena_ready_peers.erase(id)
 		if dedicated and leader_id == id:
@@ -186,10 +232,12 @@ func _on_peer_disconnected(id: int) -> void:
 		_broadcast_players()
 
 func _on_connected_to_server() -> void:
+	_awaiting_connect = false
 	srv_register.rpc_id(1, GameSettings.player_name,
 		GameSettings.character_id if not GameSettings.character_id.is_empty() else CharacterLib.default_id())
 
 func _on_connection_failed() -> void:
+	_awaiting_connect = false
 	leave()
 	session_closed.emit("Couldn't connect to the room.")
 
@@ -220,6 +268,12 @@ func srv_register(pname: String, character: String) -> void:
 		leader_id = id
 	_balance_bots()
 	_broadcast_players()
+	if infinite:
+		var join_feed := "%s joined the match" % players[id]["name"]
+		cl_kill_feed.rpc(join_feed)
+		kill_feed.emit(join_feed)
+		# Mandarle el hall of fame actual al que entra.
+		cl_hall.rpc_id(id, hall_top)
 	if infinite and in_match:
 		# Drop-in: el nuevo jugador entra directo a la partida en curso.
 		cl_start_match.rpc_id(id)
@@ -337,6 +391,7 @@ func begin_infinite() -> void:
 		return
 	infinite = true
 	round_seconds_total = INFINITE_ROUND_SECONDS if round_seconds_total == 300 else round_seconds_total
+	_load_hall()
 	_balance_bots()
 	_broadcast_players()
 	start_match()
@@ -358,38 +413,76 @@ func _soft_reset_round() -> void:
 	_broadcast_players()
 	cl_round_reset.rpc(winner_name, winner_kills)
 	round_reset.emit(winner_name, winner_kills)
+	cl_hall.rpc(hall_top)
+	hall_changed.emit()
+	for id in players.keys().filter(func(k): return int(k) < 0):
+		_bot_chat(id, BOT_CHAT_RESET, 0.3)
 	print("[Net] Dashboard reset; last winner: %s (%d kills)" % [winner_name, winner_kills])
+
+## Carga el top histórico desde el archivo al arrancar el server.
+func _load_hall() -> void:
+	if not FileAccess.file_exists(HISTORY_PATH):
+		return
+	var parsed = JSON.parse_string(FileAccess.get_file_as_string(HISTORY_PATH))
+	if typeof(parsed) != TYPE_DICTIONARY:
+		return
+	var all_time: Dictionary = parsed.get("all_time", {})
+	var names := all_time.keys()
+	names.sort_custom(func(a, b): return int(all_time[a]) > int(all_time[b]))
+	hall_top = []
+	for n in names.slice(0, 3):
+		hall_top.append({"name": n, "kills": int(all_time[n])})
+
+@rpc("authority", "reliable")
+func cl_streak(title: String) -> void:
+	streak_announce.emit(title)
 
 @rpc("authority", "reliable")
 func cl_round_reset(winner_name: String, winner_kills: int) -> void:
 	round_reset.emit(winner_name, winner_kills)
 
+@rpc("authority", "reliable")
+func cl_hall(top: Array) -> void:
+	hall_top = top
+	hall_changed.emit()
+
 ## Historial en disco (user://match_history.json): un registro por ciclo.
 func _save_history(winner_name: String) -> void:
-	var history := []
+	var data := {"cycles": [], "all_time": {}}
 	if FileAccess.file_exists(HISTORY_PATH):
 		var parsed = JSON.parse_string(FileAccess.get_file_as_string(HISTORY_PATH))
 		if typeof(parsed) == TYPE_ARRAY:
-			history = parsed
+			data["cycles"] = parsed # formato viejo -> migrar
+		elif typeof(parsed) == TYPE_DICTIONARY:
+			data = parsed
 	var standings := []
+	var all_time: Dictionary = data.get("all_time", {})
 	for id in sorted_ids():
 		var pl: Dictionary = players[id]
 		standings.append({
 			"name": pl["name"], "kills": int(pl["kills"]),
 			"deaths": int(pl["deaths"]), "score": int(pl.get("score", 0)),
 		})
-	history.append({
+		all_time[pl["name"]] = int(all_time.get(pl["name"], 0)) + int(pl["kills"])
+	data["all_time"] = all_time
+	data["cycles"].append({
 		"ended_at": Time.get_datetime_string_from_system(true),
 		"duration_seconds": round_seconds_total,
 		"winner": winner_name,
 		"standings": standings,
 	})
-	while history.size() > 100:
-		history.pop_front()
+	while data["cycles"].size() > 100:
+		data["cycles"].pop_front()
 	var f := FileAccess.open(HISTORY_PATH, FileAccess.WRITE)
 	if f:
-		f.store_string(JSON.stringify(history, "\t"))
+		f.store_string(JSON.stringify(data, "\t"))
 		f.close()
+	# Recalcular el top-3 histórico que ven los jugadores.
+	var names := all_time.keys()
+	names.sort_custom(func(a, b): return int(all_time[a]) > int(all_time[b]))
+	hall_top = []
+	for n in names.slice(0, 3):
+		hall_top.append({"name": n, "kills": int(all_time[n])})
 
 # ARRANQUE DE PARTIDA
 
@@ -480,8 +573,21 @@ func register_kill(killer_id: int, victim_id: int, headshot := false) -> void:
 		feed = "%s eliminated %s" % [players[killer_id]["name"], victim_name]
 		if headshot:
 			feed += " ☠ HEADSHOT"
-		if players[killer_id]["streak"] >= 3:
-			feed += " (streak x%d)" % players[killer_id]["streak"]
+		var streak := int(players[killer_id]["streak"])
+		if streak >= 3:
+			feed += " (streak x%d)" % streak
+		if STREAK_TITLES.has(streak):
+			var title: String = STREAK_TITLES[streak]
+			if killer_id > 0:
+				if killer_id == 1:
+					streak_announce.emit(title)
+				else:
+					cl_streak.rpc_id(killer_id, title)
+			elif streak >= 3:
+				_bot_chat(killer_id, BOT_CHAT_STREAK, 0.35)
+		# El bot que muere a veces se queja; el humano que muere ve el feed.
+		if victim_id < 0:
+			_bot_chat(victim_id, BOT_CHAT_KILLED, 0.12)
 	else:
 		feed = "%s took themselves out" % victim_name
 	_broadcast_players()
@@ -494,6 +600,51 @@ func register_kill(killer_id: int, victim_id: int, headshot := false) -> void:
 @rpc("authority", "reliable")
 func cl_kill_feed(text: String) -> void:
 	kill_feed.emit(text)
+
+# CHAT (server-authoritative: valida, recorta y rate-limitea)
+
+func send_chat(text: String) -> void:
+	if not session_active():
+		return
+	if is_session_server():
+		_srv_handle_chat(1, text)
+	else:
+		srv_chat.rpc_id(1, text)
+
+@rpc("any_peer", "reliable")
+func srv_chat(text: String) -> void:
+	if multiplayer.is_server():
+		_srv_handle_chat(multiplayer.get_remote_sender_id(), text)
+
+func _srv_handle_chat(sender: int, text: String) -> void:
+	if not players.has(sender):
+		return
+	text = text.strip_edges().substr(0, 90)
+	if text.is_empty():
+		return
+	var now := Time.get_ticks_msec() / 1000.0
+	if now - float(_chat_last_at.get(sender, -10.0)) < 1.0:
+		return # rate limit
+	_chat_last_at[sender] = now
+	var pname := String(players[sender]["name"])
+	cl_chat.rpc(pname, text)
+	chat_message.emit(pname, text)
+
+@rpc("authority", "reliable")
+func cl_chat(pname: String, text: String) -> void:
+	chat_message.emit(pname, text)
+
+## Chat de bots: frases cortas con probabilidad baja (se sienten personas).
+func _bot_chat(bot_id: int, pool: Array, chance: float) -> void:
+	if not is_session_server() or not players.has(bot_id) or randf() > chance:
+		return
+	var pname := String(players[bot_id]["name"])
+	var text := String(pool[randi() % pool.size()])
+	# Delay chico para que no sea instantáneo (nadie tipea en 0 ms).
+	get_tree().create_timer(randf_range(1.2, 3.5)).timeout.connect(func():
+		if session_active():
+			cl_chat.rpc(pname, text)
+			chat_message.emit(pname, text))
 
 # RELOJ DE RONDA (server)
 

@@ -29,6 +29,7 @@ var mouse_sens_mult := 1.0 # 0.2 .. 3.0
 var volume := 80.0 # 0 .. 100
 var quality := 1 # 0 Baja, 1 Media, 2 Alta
 var fov := 90.0 # 70 .. 110
+var show_stats := true # ping/FPS en el HUD
 var player_name := "Player"
 var character_id := ""
 var last_server := "" # última dirección usada en JOIN (ej. wss://xxx.onrender.com)
@@ -49,6 +50,7 @@ func load_settings() -> void:
 	volume = float(cfg.get_value("audio", "volume", 80.0))
 	quality = int(cfg.get_value("video", "quality", 1))
 	fov = float(cfg.get_value("video", "fov", 90.0))
+	show_stats = bool(cfg.get_value("video", "show_stats", true))
 	player_name = String(cfg.get_value("profile", "name", "Player"))
 	character_id = String(cfg.get_value("profile", "character", ""))
 	last_server = String(cfg.get_value("profile", "last_server", ""))
@@ -63,6 +65,7 @@ func save_settings() -> void:
 	cfg.set_value("audio", "volume", volume)
 	cfg.set_value("video", "quality", quality)
 	cfg.set_value("video", "fov", fov)
+	cfg.set_value("video", "show_stats", show_stats)
 	cfg.set_value("profile", "name", player_name)
 	cfg.set_value("profile", "character", character_id)
 	cfg.set_value("profile", "last_server", last_server)

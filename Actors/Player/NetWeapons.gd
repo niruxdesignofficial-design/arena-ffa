@@ -52,6 +52,10 @@ signal loadout_changed # armas desbloqueadas cambiaron (pickup o respawn)
 
 var current_index := 1
 var unlocked: Array[bool] = []
+var ads := false # apuntando (click derecho)
+
+const ADS_OFFSET := Vector3(-0.3, 0.13, 0.12) # lleva el arma al centro
+var _sway := Vector2.ZERO
 
 var _viewmodels: Array[Node3D] = []
 var _muzzles: Array[Node3D] = []
@@ -112,10 +116,25 @@ func _gun_length(gun: Node3D) -> float:
 	return total
 
 func _process(delta: float) -> void:
-	# Recuperación tipo resorte del retroceso.
+	# Recuperación tipo resorte del retroceso + sway + ADS + dip de recarga.
+	_sway = _sway.lerp(Vector2.ZERO, 6.0 * delta)
 	var vm := _viewmodels[current_index]
-	vm.position = vm.position.lerp(_rest_pos[current_index], 8.0 * delta)
-	vm.rotation = vm.rotation.lerp(Vector3.ZERO, 8.0 * delta)
+	var target_pos := _rest_pos[current_index] + Vector3(_sway.x, _sway.y, 0)
+	if ads:
+		target_pos += ADS_OFFSET
+	var target_rot := Vector3(0, 0, -_sway.x * 1.2)
+	if is_reloading():
+		target_rot.x = deg_to_rad(26)
+		target_pos.y -= 0.06
+	vm.position = vm.position.lerp(target_pos, 8.0 * delta)
+	vm.rotation = vm.rotation.lerp(target_rot, 8.0 * delta)
+
+## Retardo del arma al mover el mouse (lo alimenta NetPlayer).
+func add_sway(relative: Vector2) -> void:
+	_sway = (_sway - relative * 0.00045).clamp(Vector2(-0.03, -0.03), Vector2(0.03, 0.03))
+
+func is_reloading() -> bool:
+	return bool(_ammo[current_index]["reloading"])
 
 func current_def() -> Dictionary:
 	return WeaponDefs.get_def(current_index)

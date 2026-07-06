@@ -6,6 +6,80 @@
 extends CanvasLayer
 
 const FONT_PATH := "res://UI/Share_Tech_Mono_Font/ShareTechMono-Regular.ttf"
+
+## Radar circular: vos al centro; enemigos si están cerca o dispararon recién.
+class RadarDraw extends Control:
+	const RANGE := 26.0
+	func _process(_d: float) -> void:
+		queue_redraw()
+	func _draw() -> void:
+		var r := size.x * 0.5
+		var c := size * 0.5
+		draw_circle(c, r, Color(0.05, 0.07, 0.09, 0.55))
+		draw_arc(c, r - 1, 0, TAU, 40, Color(0.235, 0.604, 0.831, 0.5), 2.0)
+		draw_line(c - Vector2(0, r * 0.9), c + Vector2(0, r * 0.9), Color(1, 1, 1, 0.08))
+		draw_line(c - Vector2(r * 0.9, 0), c + Vector2(r * 0.9, 0), Color(1, 1, 1, 0.08))
+		var me: NetPlayer = null
+		for pnode in get_tree().get_nodes_in_group("net_players"):
+			if (pnode as NetPlayer).is_local():
+				me = pnode
+				break
+		if me == null:
+			return
+		draw_circle(c, 3.0, Color(0.95, 0.73, 0.18))
+		var now := Time.get_ticks_msec() / 1000.0
+		for pnode in get_tree().get_nodes_in_group("net_players"):
+			var np := pnode as NetPlayer
+			if np == me or np.is_dead:
+				continue
+			var rel := np.global_position - me.global_position
+			var dist := Vector2(rel.x, rel.z).length()
+			var fired_recently: bool = now - np.radar_ping_at < 1.5
+			if dist > RANGE and not fired_recently:
+				continue
+			# Rotar según hacia dónde mirás (adelante = arriba).
+			var ang := atan2(rel.x, -rel.z) + me.rotation.y
+			var d := minf(dist / RANGE, 1.0) * (r - 5.0)
+			var dot := c + Vector2(sin(ang), -cos(ang)) * d
+			draw_circle(dot, 3.5 if fired_recently else 2.5,
+				Color(1.0, 0.3, 0.25) if fired_recently else Color(0.9, 0.5, 0.4, 0.9))
+
+## Overlay de mira de la AWP (4x): viñeta negra con círculo y cruz.
+class ScopeDraw extends Control:
+	func _draw() -> void:
+		var c := size * 0.5
+		var r := minf(size.x, size.y) * 0.42
+		# Tapar todo menos el círculo.
+		draw_rect(Rect2(0, 0, size.x, c.y - r), Color.BLACK)
+		draw_rect(Rect2(0, c.y + r, size.x, size.y - c.y - r), Color.BLACK)
+		draw_rect(Rect2(0, c.y - r, c.x - r, r * 2), Color.BLACK)
+		draw_rect(Rect2(c.x + r, c.y - r, size.x - c.x - r, r * 2), Color.BLACK)
+		for i in 24:
+			var a0 := TAU * i / 24.0
+			draw_arc(c, r, a0, a0 + TAU / 24.0, 4, Color.BLACK, 6.0)
+		draw_arc(c, r - 2, 0, TAU, 64, Color(0, 0, 0, 0.9), 4.0)
+		draw_line(c - Vector2(r, 0), c + Vector2(r, 0), Color(0, 0, 0, 0.85), 1.5)
+		draw_line(c - Vector2(0, r), c + Vector2(0, r), Color(0, 0, 0, 0.85), 1.5)
+
+## Indicadores de dirección del daño (flechas rojas alrededor del centro).
+class DamageDirDraw extends Control:
+	var hits: Array = [] # {angle, until}
+	func _process(_d: float) -> void:
+		var now := Time.get_ticks_msec() / 1000.0
+		hits = hits.filter(func(h): return h["until"] > now)
+		queue_redraw()
+	func add_hit(angle: float) -> void:
+		hits.append({"angle": angle, "until": Time.get_ticks_msec() / 1000.0 + 0.7})
+	func _draw() -> void:
+		var c := size * 0.5
+		for h in hits:
+			var ang: float = h["angle"]
+			var dir := Vector2(sin(ang), -cos(ang))
+			var base := c + dir * 110.0
+			var side := Vector2(-dir.y, dir.x) * 14.0
+			var tip := c + dir * 138.0
+			draw_colored_polygon(PackedVector2Array([tip, base + side, base - side]),
+				Color(0.9, 0.15, 0.1, 0.75))
 const GOLD := Color(0.953, 0.729, 0.184)
 const PANEL_BG := Color(0.086, 0.09, 0.102, 0.86)
 
@@ -40,6 +114,9 @@ func _ready() -> void:
 	Net.round_time_changed.connect(_on_time)
 	Net.countdown_started.connect(_on_countdown)
 	Net.round_reset.connect(_on_round_reset)
+	Net.chat_message.connect(_on_chat)
+	Net.streak_announce.connect(_on_streak)
+	Net.hall_changed.connect(_refresh_hall)
 	_refresh_scores()
 	_on_time(Net.round_seconds_left)
 
@@ -137,6 +214,10 @@ func _build() -> void:
 	_score_grid.add_theme_constant_override("h_separation", 26)
 	_score_grid.add_theme_constant_override("v_separation", 4)
 	sb_box.add_child(_score_grid)
+	_hall_label = _label(14, Color(0.953, 0.729, 0.184, 0.8))
+	_hall_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_hall_label.text = ""
+	sb_box.add_child(_hall_label)
 
 	# Pantalla de muerte.
 	_death_panel = CenterContainer.new()
@@ -206,6 +287,78 @@ func _build() -> void:
 		_weapon_bar.add_child(slot)
 		_weapon_slots.append(slot)
 
+	# Scope de la AWP (tapa la pantalla; se activa desde NetPlayer).
+	_scope = ScopeDraw.new()
+	_scope.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_scope.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_scope.visible = false
+	root.add_child(_scope)
+
+	# Dirección del daño recibido.
+	_dmg_dir = DamageDirDraw.new()
+	_dmg_dir.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_dmg_dir.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	root.add_child(_dmg_dir)
+
+	# Radar (abajo a la izquierda, arriba de la vida).
+	_radar = RadarDraw.new()
+	_radar.custom_minimum_size = Vector2(132, 132)
+	_radar.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
+	_radar.anchor_top = 1.0
+	_radar.offset_left = 20
+	_radar.offset_top = -260
+	_radar.offset_right = 152
+	_radar.offset_bottom = -128
+	_radar.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	root.add_child(_radar)
+
+	# Ping / FPS.
+	_stats_label = _label(13, Color(1, 1, 1, 0.55))
+	_stats_label.position = Vector2(20, 44)
+	root.add_child(_stats_label)
+
+	# "RELOADING" bajo el crosshair.
+	_reload_label = _label(16, Color(1, 1, 1, 0.75))
+	_reload_label.text = "RELOADING"
+	_reload_label.set_anchors_preset(Control.PRESET_CENTER)
+	_reload_label.anchor_top = 0.57
+	_reload_label.anchor_bottom = 0.57
+	_reload_label.visible = false
+	root.add_child(_reload_label)
+
+	# Banner de racha (DOUBLE KILL, RAMPAGE...).
+	_streak_label = _label(40, GOLD)
+	_streak_label.set_anchors_preset(Control.PRESET_CENTER)
+	_streak_label.anchor_top = 0.28
+	_streak_label.anchor_bottom = 0.28
+	_streak_label.modulate.a = 0.0
+	root.add_child(_streak_label)
+
+	# Chat (mensajes + input con Enter).
+	_chat_box = VBoxContainer.new()
+	_chat_box.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
+	_chat_box.anchor_top = 1.0
+	_chat_box.offset_left = 20
+	_chat_box.offset_top = -122
+	_chat_box.offset_right = 480
+	_chat_box.offset_bottom = -104
+	_chat_box.alignment = BoxContainer.ALIGNMENT_END
+	_chat_box.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	root.add_child(_chat_box)
+	_chat_input = LineEdit.new()
+	_chat_input.add_theme_font_override("font", _font)
+	_chat_input.placeholder_text = "say something..."
+	_chat_input.max_length = 90
+	_chat_input.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
+	_chat_input.anchor_top = 1.0
+	_chat_input.offset_left = 20
+	_chat_input.offset_top = -100
+	_chat_input.offset_right = 420
+	_chat_input.offset_bottom = -72
+	_chat_input.visible = false
+	_chat_input.text_submitted.connect(_submit_chat)
+	root.add_child(_chat_input)
+
 	# Menú de pausa (ESC).
 	_pause_panel = CenterContainer.new()
 	_pause_panel.set_anchors_preset(Control.PRESET_FULL_RECT)
@@ -221,6 +374,30 @@ func _build() -> void:
 	pt.text = "PAUSED"
 	pt.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	pv.add_child(pt)
+	for cfg in [
+		["SENSITIVITY", 0.2, 3.0, 0.1, func(): return GameSettings.mouse_sens_mult,
+			func(v): GameSettings.mouse_sens_mult = v],
+		["VOLUME", 0.0, 100.0, 1.0, func(): return GameSettings.volume,
+			func(v):
+				GameSettings.volume = v
+				GameSettings.apply_volume()],
+		["FOV", 70.0, 110.0, 1.0, func(): return GameSettings.fov,
+			func(v): GameSettings.fov = v],
+	]:
+		var lbl := _label(13, Color(1, 1, 1, 0.6))
+		lbl.text = cfg[0]
+		pv.add_child(lbl)
+		var slider := HSlider.new()
+		slider.min_value = cfg[1]
+		slider.max_value = cfg[2]
+		slider.step = cfg[3]
+		slider.value = cfg[4].call()
+		slider.custom_minimum_size = Vector2(260, 20)
+		var setter: Callable = cfg[5]
+		slider.value_changed.connect(func(v):
+			setter.call(v)
+			GameSettings.save_settings())
+		pv.add_child(slider)
 	var resume := Button.new()
 	resume.text = "RESUME"
 	resume.add_theme_font_override("font", _font)
@@ -236,6 +413,16 @@ func _build() -> void:
 	pv.add_child(note)
 
 func _input(event: InputEvent) -> void:
+	# Chat: Enter abre/enviar; ESC lo cierra.
+	if _chat_input.visible:
+		if event.is_action_pressed("ui_cancel"):
+			_close_chat()
+			get_viewport().set_input_as_handled()
+		return
+	if event.is_action_pressed("chat") and not _pause_panel.visible:
+		_open_chat()
+		get_viewport().set_input_as_handled()
+		return
 	if event.is_action_pressed("scoreboard"):
 		_scoreboard.visible = true
 		_refresh_scores()
@@ -245,13 +432,86 @@ func _input(event: InputEvent) -> void:
 		_toggle_pause()
 
 func _process(delta: float) -> void:
+	# Ping/FPS + cartel de recarga.
+	_stats_label.visible = GameSettings.show_stats
+	if GameSettings.show_stats and Engine.get_frames_drawn() % 20 == 0:
+		_stats_label.text = "%d FPS   %d ms" % [Engine.get_frames_per_second(), Net.ping_ms] \
+			if not Net.is_session_server() else "%d FPS" % Engine.get_frames_per_second()
+	if _local_player == null or not is_instance_valid(_local_player):
+		for pnode in get_tree().get_nodes_in_group("net_players"):
+			if (pnode as NetPlayer).is_local():
+				_local_player = pnode
+				break
+	_reload_label.visible = _local_player != null and is_instance_valid(_local_player) \
+		and _local_player._weapons != null and _local_player._weapons.is_reloading()
 	_click_hint.visible = Input.mouse_mode != Input.MOUSE_MODE_CAPTURED \
-		and not _pause_panel.visible and not _death_panel.visible
+		and not _pause_panel.visible and not _death_panel.visible and not _chat_input.visible
 	if _click_hint.visible:
 		_click_hint.modulate.a = 0.6 + 0.4 * sin(Time.get_ticks_msec() / 250.0)
 	if _death_panel.visible and _death_left > 0:
 		_death_left = maxf(0.0, _death_left - delta)
 		_death_count.text = "Respawning in %d..." % int(ceil(_death_left))
+
+func is_chat_open() -> bool:
+	return _chat_input.visible
+
+func _open_chat() -> void:
+	_chat_input.visible = true
+	_chat_input.grab_focus()
+	Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
+
+func _close_chat() -> void:
+	_chat_input.text = ""
+	_chat_input.visible = false
+	Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
+
+func _submit_chat(text: String) -> void:
+	if not text.strip_edges().is_empty():
+		Net.send_chat(text)
+	_close_chat()
+
+func _on_chat(pname: String, text: String) -> void:
+	Sfx.play("chat", -10.0)
+	var l := _label(15)
+	l.text = "[%s]: %s" % [pname, text]
+	l.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.8))
+	l.add_theme_constant_override("outline_size", 4)
+	_chat_box.add_child(l)
+	if _chat_box.get_child_count() > 6:
+		_chat_box.get_child(0).queue_free()
+	var tw := l.create_tween()
+	tw.tween_interval(7.0)
+	tw.tween_property(l, "modulate:a", 0.0, 1.0)
+	tw.tween_callback(l.queue_free)
+
+func _on_streak(title: String) -> void:
+	Sfx.play("streak")
+	_streak_label.text = title
+	_streak_label.modulate.a = 1.0
+	_streak_label.scale = Vector2(1.4, 1.4)
+	_streak_label.pivot_offset = _streak_label.size / 2
+	var tw := create_tween()
+	tw.set_parallel(true)
+	tw.tween_property(_streak_label, "scale", Vector2.ONE, 0.18)
+	tw.chain().tween_interval(1.2)
+	tw.chain().tween_property(_streak_label, "modulate:a", 0.0, 0.4)
+
+func set_scope(v: bool) -> void:
+	_scope.visible = v
+
+func show_damage_dir(angle: float) -> void:
+	_dmg_dir.add_hit(angle)
+
+func _refresh_hall() -> void:
+	if Net.hall_top.is_empty():
+		_hall_label.text = ""
+		return
+	var parts := []
+	var rank := 0
+	for entry in Net.hall_top:
+		rank += 1
+		parts.append("%d. %s (%d)" % [rank, entry["name"], int(entry["kills"])])
+	_hall_label.text = "ALL-TIME KILLS   " + "   ".join(parts)
 
 func is_paused() -> bool:
 	return _pause_panel.visible
@@ -368,6 +628,16 @@ func update_health_fx(h: int, max_h: int) -> void:
 var _current_weapon := 1
 var _unlocked_slots: Array[bool] = []
 var _click_hint: Label
+var _chat_box: VBoxContainer
+var _chat_input: LineEdit
+var _streak_label: Label
+var _radar: RadarDraw
+var _scope: ScopeDraw
+var _dmg_dir: DamageDirDraw
+var _stats_label: Label
+var _reload_label: Label
+var _hall_label: Label
+var _local_player: NetPlayer
 
 func set_weapon_index(index: int) -> void:
 	_current_weapon = index
