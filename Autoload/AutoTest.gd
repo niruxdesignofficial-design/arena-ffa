@@ -121,10 +121,13 @@ func _run_overview() -> void:
 	await get_tree().create_timer(1.2).timeout
 	GameSettings.player_name = "VISTA"
 	GameSettings.character_id = CharacterLib.default_id()
-	Net.host()
+	var err := Net.host()
+	print("[AutoTest] overview host: ", "OK" if err.is_empty() else err)
 	await get_tree().create_timer(0.5).timeout
 	Net.start_match()
+	print("[AutoTest] overview in_match=", Net.in_match)
 	await get_tree().create_timer(2.5).timeout
+	print("[AutoTest] overview scene=", get_tree().current_scene.name if get_tree().current_scene else "none")
 	var cam := Camera3D.new()
 	cam.position = Vector3(0, 52, 34)
 	get_tree().current_scene.add_child(cam)
@@ -149,6 +152,9 @@ func _run_dedicated() -> void:
 	if not err.is_empty():
 		printerr("[Server] " + err)
 		get_tree().quit(1)
+		return
+	# Producción = partida única infinita (bots automáticos, reset cada 30 min).
+	Net.begin_infinite()
 
 ## Servidor dedicado de prueba: arranca solo cuando hay jugadores, y tras
 ## el fin de ronda lanza una revancha automática.

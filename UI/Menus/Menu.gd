@@ -29,7 +29,6 @@ var _lobby_room: VBoxContainer
 var _lobby_players_box: VBoxContainer
 var _lobby_status: Label
 var _lobby_start_btn: Button
-var _bot_row: HBoxContainer
 var _ip_edit: LineEdit
 var _search_results: VBoxContainer
 var _toast: Label
@@ -98,6 +97,26 @@ func _button(text: String, size := 22) -> Button:
 	b.add_theme_font_override("font", _font)
 	b.add_theme_font_size_override("font_size", size)
 	b.custom_minimum_size = Vector2(340, 46)
+	var normal := StyleBoxFlat.new()
+	normal.bg_color = Color(0.10, 0.12, 0.155)
+	normal.border_color = Color(BLUE.r, BLUE.g, BLUE.b, 0.35)
+	normal.set_border_width_all(1)
+	normal.set_corner_radius_all(8)
+	normal.set_content_margin_all(10)
+	var hover: StyleBoxFlat = normal.duplicate()
+	hover.bg_color = Color(0.135, 0.175, 0.225)
+	hover.border_color = BLUE
+	hover.set_border_width_all(2)
+	var pressed: StyleBoxFlat = normal.duplicate()
+	pressed.bg_color = Color(0.08, 0.09, 0.11)
+	pressed.border_color = GOLD
+	pressed.set_border_width_all(2)
+	b.add_theme_stylebox_override("normal", normal)
+	b.add_theme_stylebox_override("hover", hover)
+	b.add_theme_stylebox_override("pressed", pressed)
+	b.add_theme_stylebox_override("focus", hover.duplicate())
+	b.add_theme_color_override("font_hover_color", Color(1, 1, 1))
+	b.add_theme_color_override("font_pressed_color", GOLD)
 	b.pressed.connect(func(): Sfx.play("ui", -6.0))
 	return b
 
@@ -106,8 +125,10 @@ func _panel_style(border := BLUE) -> StyleBoxFlat:
 	sb.bg_color = PANEL_BG
 	sb.border_color = Color(border.r, border.g, border.b, 0.45)
 	sb.set_border_width_all(2)
-	sb.set_corner_radius_all(8)
-	sb.set_content_margin_all(24)
+	sb.set_corner_radius_all(12)
+	sb.set_content_margin_all(26)
+	sb.shadow_color = Color(0, 0, 0, 0.5)
+	sb.shadow_size = 18
 	return sb
 
 func _screen_root() -> CenterContainer:
@@ -118,15 +139,28 @@ func _screen_root() -> CenterContainer:
 	return c
 
 func _build_background() -> void:
-	var bg := ColorRect.new()
-	bg.color = Color(0.05, 0.06, 0.08)
+	# Gradiente azul profundo -> casi negro, con una banda dorada sutil.
+	var grad := Gradient.new()
+	grad.colors = PackedColorArray([
+		Color(0.075, 0.10, 0.155), Color(0.045, 0.055, 0.08), Color(0.03, 0.035, 0.05),
+	])
+	grad.offsets = PackedFloat32Array([0.0, 0.55, 1.0])
+	var grad_tex := GradientTexture2D.new()
+	grad_tex.gradient = grad
+	grad_tex.fill_from = Vector2(0, 0)
+	grad_tex.fill_to = Vector2(0, 1)
+	var bg := TextureRect.new()
+	bg.texture = grad_tex
+	bg.stretch_mode = TextureRect.STRETCH_SCALE
 	bg.set_anchors_preset(Control.PRESET_FULL_RECT)
 	add_child(bg)
-	var stripe := ColorRect.new()
-	stripe.color = Color(BLUE.r, BLUE.g, BLUE.b, 0.06)
-	stripe.set_anchors_preset(Control.PRESET_FULL_RECT)
-	stripe.anchor_bottom = 0.35
-	add_child(stripe)
+	var line := ColorRect.new()
+	line.color = Color(GOLD.r, GOLD.g, GOLD.b, 0.25)
+	line.set_anchors_preset(Control.PRESET_FULL_RECT)
+	line.anchor_top = 0.328
+	line.anchor_bottom = 0.331
+	line.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	add_child(line)
 
 func _build_toast() -> void:
 	_toast = _label(17, Color(1, 0.6, 0.4))
@@ -155,9 +189,11 @@ func _build_main() -> Control:
 	box.alignment = BoxContainer.ALIGNMENT_CENTER
 	box.add_theme_constant_override("separation", 14)
 	root.add_child(box)
-	var title := _label(72, GOLD)
+	var title := _label(76, GOLD)
 	title.text = "ARENA FFA"
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	title.add_theme_color_override("font_outline_color", Color(0.25, 0.16, 0.02))
+	title.add_theme_constant_override("outline_size", 10)
 	box.add_child(title)
 	var subtitle := _label(20, Color(1, 1, 1, 0.55))
 	subtitle.text = "free-for-all — most kills wins"
@@ -364,18 +400,6 @@ func _build_lobby() -> Control:
 	_lobby_players_box = VBoxContainer.new()
 	_lobby_players_box.add_theme_constant_override("separation", 6)
 	_lobby_room.add_child(_lobby_players_box)
-	_bot_row = HBoxContainer.new()
-	_bot_row.alignment = BoxContainer.ALIGNMENT_CENTER
-	_bot_row.add_theme_constant_override("separation", 12)
-	_lobby_room.add_child(_bot_row)
-	var add_bot := _button("+ ADD BOT", 16)
-	add_bot.custom_minimum_size = Vector2(220, 40)
-	add_bot.pressed.connect(func(): Net.request_add_bot())
-	_bot_row.add_child(add_bot)
-	var del_bot := _button("− REMOVE BOT", 16)
-	del_bot.custom_minimum_size = Vector2(220, 40)
-	del_bot.pressed.connect(func(): Net.request_remove_bot())
-	_bot_row.add_child(del_bot)
 	_lobby_start_btn = _button("START MATCH")
 	_lobby_start_btn.pressed.connect(func(): Net.request_start())
 	_lobby_room.add_child(_lobby_start_btn)
@@ -456,14 +480,13 @@ func _refresh_lobby() -> void:
 		var p: Dictionary = Net.players[id]
 		var row := _label(18)
 		var tags := ""
-		if id == Net.leader_id:
+		if id == Net.leader_id and not Net.dedicated:
 			tags += "  [LEADER]"
 		if id == Net.my_id():
 			tags += "  (you)"
 		row.text = "• %s — %s%s" % [p["name"], CharacterLib.display_name(String(p["character"])), tags]
 		_lobby_players_box.add_child(row)
 	_lobby_start_btn.visible = Net.i_am_leader()
-	_bot_row.visible = Net.i_am_leader()
 	if not Net.i_am_leader():
 		var waiting := _label(15, Color(1, 1, 1, 0.5))
 		waiting.text = "Waiting for the leader to start the match..."

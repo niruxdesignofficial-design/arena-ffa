@@ -23,12 +23,12 @@ const PICKUPS: Array[Dictionary] = [
 	{"type": "ammo", "pos": Vector3(13, 0.5, -13)},
 	{"type": "ammo", "pos": Vector3(-19.5, 0.5, 0)},
 	{"type": "ammo", "pos": Vector3(19.5, 0.5, 0)},
-	{"type": "weapon", "windex": 2, "pos": Vector3(-8, 0.5, -3)}, # MAC-10
-	{"type": "weapon", "windex": 3, "pos": Vector3(8, 0.5, 3)}, # Shotgun
-	{"type": "weapon", "windex": 4, "pos": Vector3(0, 4.6, 0)}, # AK-47 (plataforma)
-	{"type": "weapon", "windex": 5, "pos": Vector3(13, 4.0, -13)}, # AWP (techo)
+	{"type": "ammo", "pos": Vector3(0, 4.6, 0)}, # plataforma central
+	{"type": "ammo", "pos": Vector3(13, 4.0, -13)}, # techo (recompensa por subir)
 	{"type": "medkit", "pos": Vector3(10, 0.5, 16)},
 	{"type": "medkit", "pos": Vector3(-10, 0.5, -16)},
+	{"type": "medkit", "pos": Vector3(-8, 0.5, -3)},
+	{"type": "medkit", "pos": Vector3(8, 0.5, 3)},
 	{"type": "medkit", "pos": Vector3(-18, 2.7, -18)}, # plataforma esquina
 ]
 const PICKUP_RESPAWN_SECONDS := 20.0
@@ -39,7 +39,12 @@ const MEDKIT_HEAL := 40
 var _ammo_boxes: Array[Node3D] = []
 var _box_active: Array[bool] = []
 
-@onready var spawner: MultiplayerSpawner = $Spawner
+# Spawn manual (sin MultiplayerSpawner): permite entrar a la partida en
+# curso — al peer nuevo se le manda el estado completo cuando carga la Arena.
+var _spawn_data := {} # id -> data (solo server)
+var _initialized := false
+var _countdown_done := false
+
 @onready var players_root: Node3D = $Players
 
 func _ready() -> void:
@@ -52,9 +57,8 @@ func _ready() -> void:
 		add_child(hud)
 		var match_hud: CanvasLayer = MATCH_HUD.new()
 		add_child(match_hud)
-	spawner.spawn_function = _spawn_player
 	if Net.is_session_server():
-		Net.players_changed.connect(_despawn_missing)
+		Net.players_changed.connect(_reconcile_players)
 	Net.notify_arena_ready.call_deferred()
 
 func _physics_process(_delta: float) -> void:
@@ -190,26 +194,68 @@ func _set_box_active(i: int, active: bool) -> void:
 	_box_active[i] = active
 	_ammo_boxes[i].visible = active
 
-## Llamado por Net (solo en el server) cuando todos los peers cargaron.
-func spawn_all_players() -> void:
+## Llamado por Net en el SERVER cuando un peer (o el propio server) tiene
+## la Arena cargada. Maneja tanto el arranque como el drop-in a mitad de partida.
+func on_peer_ready(peer_id: int) -> void:
 	if not multiplayer.is_server():
 		return
-	var i := 0
-	for id in Net.players:
-		var entry: Dictionary = Net.players[id]
-		spawner.spawn({
-			"id": id,
-			"name": entry["name"],
-			"character": entry["character"],
-			"bot": bool(entry.get("bot", false)),
-			"pos": SPAWN_POINTS[i % SPAWN_POINTS.size()],
-		})
-		i += 1
+	if peer_id != 1:
+		# Peer nuevo: mandarle todos los jugadores ya spawneados.
+		for id in _spawn_data:
+			cl_spawn.rpc_id(peer_id, _spawn_data[id])
+	_initialized = true
+	_reconcile_players()
+	if not _countdown_done:
+		_countdown_done = true
+		Net.begin_countdown()
 
-func _spawn_player(data: Dictionary) -> Node:
-	var p: NetPlayer = PLAYER_SCENE.instantiate()
+## SERVER: iguala los nodos spawneados con Net.players (altas y bajas de
+## humanos y bots, incluso a mitad de partida).
+func _reconcile_players() -> void:
+	if not multiplayer.is_server() or not _initialized:
+		return
+	for id in Net.players:
+		if not _spawn_data.has(id):
+			_srv_spawn(id)
+	for id in _spawn_data.keys().duplicate():
+		if not Net.players.has(id):
+			_srv_despawn(id)
+
+func _srv_spawn(id: int) -> void:
+	var entry: Dictionary = Net.players[id]
+	var data := {
+		"id": id,
+		"name": entry["name"],
+		"character": entry["character"],
+		"bot": bool(entry.get("bot", false)),
+		"pos": pick_spawn_point(),
+	}
+	_spawn_data[id] = data
+	_do_spawn(data)
+	cl_spawn.rpc(data)
+
+func _srv_despawn(id: int) -> void:
+	_spawn_data.erase(id)
+	_do_despawn(id)
+	cl_despawn.rpc(id)
+
+@rpc("authority", "reliable")
+func cl_spawn(data: Dictionary) -> void:
+	_do_spawn(data)
+
+@rpc("authority", "reliable")
+func cl_despawn(id: int) -> void:
+	_do_despawn(id)
+
+func _node_name(id: int) -> String:
+	return ("P%d" % id) if id > 0 else ("B%d" % absi(id))
+
+func _do_spawn(data: Dictionary) -> void:
 	var id := int(data["id"])
-	p.name = ("P%d" % id) if id > 0 else ("B%d" % absi(id))
+	if players_root.has_node(_node_name(id)):
+		return
+	var p: NetPlayer = PLAYER_SCENE.instantiate()
+	p.name = _node_name(id)
 	p.peer_id = id
 	p.display_name = String(data["name"])
 	p.character_id = String(data["character"])
@@ -220,14 +266,12 @@ func _spawn_player(data: Dictionary) -> Node:
 	# nodo raíz queda con autoridad del server (RPCs de combate = solo server).
 	if id > 0:
 		p.get_node("Sync").set_multiplayer_authority(id)
-	return p
+	players_root.add_child(p)
 
-func _despawn_missing() -> void:
-	if not multiplayer.is_server():
-		return
-	for child in players_root.get_children():
-		if child is NetPlayer and not Net.players.has(child.peer_id):
-			child.queue_free()
+func _do_despawn(id: int) -> void:
+	var node := players_root.get_node_or_null(_node_name(id))
+	if node:
+		node.queue_free()
 
 func pick_spawn_point() -> Vector3:
 	# Elegí el punto más lejos del enemigo vivo más cercano.
@@ -273,7 +317,8 @@ func _build_environment() -> void:
 	add_child(we)
 	var sun := DirectionalLight3D.new()
 	sun.rotation_degrees = Vector3(-48, -30, 0)
-	sun.light_energy = 0.9
+	sun.light_energy = 0.95
+	sun.light_color = Color(1.0, 0.95, 0.85)
 	sun.shadow_enabled = GameSettings.shadows_enabled()
 	add_child(sun)
 
@@ -352,9 +397,83 @@ func _build_geometry() -> void:
 	_box(Vector3(8.9, 1.2, -15.0), Vector3(1.8, 2.4, 1.8), COL_PLATFORM)
 	_box(Vector3(-8.9, 0.6, 13), Vector3(1.8, 1.2, 1.8), COL_PLATFORM)
 	_box(Vector3(-8.9, 1.2, 15.0), Vector3(1.8, 2.4, 1.8), COL_PLATFORM)
+	_decorate()
+
+## Detalle visual: postes de luz, pilas de ladrillos, tablones apoyados,
+## bidones y guardas emisivas. Nada de esto tiene colisión.
+func _decorate() -> void:
+	# Postes de luz cálida alrededor del centro.
+	for post_pos in [
+		Vector3(-10.5, 0, -10.5), Vector3(10.5, 0, 10.5),
+		Vector3(-10.5, 0, 10.5), Vector3(10.5, 0, -10.5),
+		Vector3(0, 0, -19.5), Vector3(0, 0, 19.5),
+	]:
+		_light_post(post_pos)
+	# Guarda emisiva dorada en el borde de la plataforma central.
+	var trim_mat := StandardMaterial3D.new()
+	trim_mat.albedo_color = Color(0.95, 0.75, 0.2)
+	trim_mat.emission_enabled = true
+	trim_mat.emission = Color(0.9, 0.65, 0.15)
+	trim_mat.emission_energy_multiplier = 0.8
+	for trim in [
+		[Vector3(0, 4.13, 5.0), Vector3(10.2, 0.08, 0.12)],
+		[Vector3(0, 4.13, -5.0), Vector3(10.2, 0.08, 0.12)],
+		[Vector3(5.0, 4.13, 0), Vector3(0.12, 0.08, 10.2)],
+		[Vector3(-5.0, 4.13, 0), Vector3(0.12, 0.08, 10.2)],
+	]:
+		var mi := MeshInstance3D.new()
+		var bm := BoxMesh.new()
+		bm.size = trim[1]
+		bm.material = trim_mat
+		mi.mesh = bm
+		add_child(mi)
+		mi.position = trim[0]
+	# Pilas de ladrillos.
+	for pile in [Vector3(-5, 0, -9), Vector3(11, 0, -3), Vector3(-12, 0, 3), Vector3(4, 0, 15), Vector3(16, 0, -8)]:
+		for i in 5:
+			_place("Brick_01.fbx", pile + Vector3(randf_range(-0.4, 0.4), 0.11 + 0.21 * (i / 2), randf_range(-0.4, 0.4)), randf() * 360.0, 1.0, false)
+	# Bidones y tablones apoyados contra coberturas.
+	for jug in [Vector3(-9.4, 0, -5.2), Vector3(12.8, 0, 5.9), Vector3(-4.2, 0, 13.8), Vector3(7.1, 0, -13.3), Vector3(-14.8, 0, -12.2)]:
+		_place("Jug_02.fbx" if randf() > 0.5 else "Jug_01.fbx", jug, randf() * 360.0, 1.1, false)
+	for plank in [
+		[Vector3(-10.9, 0.55, -6.9), 20.0], [Vector3(9.8, 0.55, -8.2), 110.0],
+		[Vector3(11.2, 0.55, 5.9), 200.0], [Vector3(-5.9, 0.55, 12.2), 290.0],
+	]:
+		_place("WoodPlank_03.fbx", plank[0], plank[1], 1.6, false)
+
+## Poste con lámpara emisiva y luz omni cálida.
+func _light_post(pos: Vector3) -> void:
+	var pole := MeshInstance3D.new()
+	var pole_mesh := BoxMesh.new()
+	pole_mesh.size = Vector3(0.14, 3.4, 0.14)
+	var pole_mat := StandardMaterial3D.new()
+	pole_mat.albedo_color = Color(0.16, 0.16, 0.18)
+	pole_mesh.material = pole_mat
+	pole.mesh = pole_mesh
+	add_child(pole)
+	pole.position = pos + Vector3(0, 1.7, 0)
+	var lamp := MeshInstance3D.new()
+	var lamp_mesh := BoxMesh.new()
+	lamp_mesh.size = Vector3(0.32, 0.24, 0.32)
+	var lamp_mat := StandardMaterial3D.new()
+	lamp_mat.albedo_color = Color(1.0, 0.85, 0.55)
+	lamp_mat.emission_enabled = true
+	lamp_mat.emission = Color(1.0, 0.8, 0.45)
+	lamp_mat.emission_energy_multiplier = 1.6
+	lamp_mesh.material = lamp_mat
+	lamp.mesh = lamp_mesh
+	add_child(lamp)
+	lamp.position = pos + Vector3(0, 3.5, 0)
+	var light := OmniLight3D.new()
+	light.light_color = Color(1.0, 0.85, 0.55)
+	light.light_energy = 1.1
+	light.omni_range = 9.0
+	add_child(light)
+	light.position = pos + Vector3(0, 3.3, 0)
 
 ## Instancia una pieza del kit con colisión trimesh y el material del pack.
-func _place(piece: String, pos: Vector3, rot_y_deg: float, scale := 1.0) -> void:
+## collide=false para decoración pura (más barato y sin trabas raras).
+func _place(piece: String, pos: Vector3, rot_y_deg: float, scale := 1.0, collide := true) -> void:
 	var scene: PackedScene = load(KIT + piece)
 	if scene == null:
 		push_warning("[Arena] No se pudo cargar la pieza del kit: " + piece)
@@ -368,7 +487,7 @@ func _place(piece: String, pos: Vector3, rot_y_deg: float, scale := 1.0) -> void
 	for node in inst.find_children("*", "MeshInstance3D", true, false):
 		var mi := node as MeshInstance3D
 		mi.material_override = _kit_material
-		if mi.mesh:
+		if collide and mi.mesh:
 			var col := CollisionShape3D.new()
 			col.shape = mi.mesh.create_trimesh_shape()
 			col.transform = _relative_transform(mi, inst)

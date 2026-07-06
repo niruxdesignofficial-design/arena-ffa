@@ -39,6 +39,7 @@ func _ready() -> void:
 	Net.kill_feed.connect(_on_kill_feed)
 	Net.round_time_changed.connect(_on_time)
 	Net.countdown_started.connect(_on_countdown)
+	Net.round_reset.connect(_on_round_reset)
 	_refresh_scores()
 	_on_time(Net.round_seconds_left)
 
@@ -162,6 +163,15 @@ func _build() -> void:
 	_countdown.text = ""
 	root.add_child(_countdown)
 
+	# Aviso "CLICK TO PLAY" cuando el mouse no está capturado (clave en web).
+	_click_hint = _label(26, GOLD)
+	_click_hint.text = "CLICK TO PLAY"
+	_click_hint.set_anchors_preset(Control.PRESET_CENTER)
+	_click_hint.anchor_top = 0.72
+	_click_hint.anchor_bottom = 0.72
+	_click_hint.visible = false
+	root.add_child(_click_hint)
+
 	# "+1 KILL" al confirmar una baja.
 	_kill_popup = _label(30, GOLD)
 	_kill_popup.set_anchors_preset(Control.PRESET_CENTER)
@@ -235,9 +245,16 @@ func _input(event: InputEvent) -> void:
 		_toggle_pause()
 
 func _process(delta: float) -> void:
+	_click_hint.visible = Input.mouse_mode != Input.MOUSE_MODE_CAPTURED \
+		and not _pause_panel.visible and not _death_panel.visible
+	if _click_hint.visible:
+		_click_hint.modulate.a = 0.6 + 0.4 * sin(Time.get_ticks_msec() / 250.0)
 	if _death_panel.visible and _death_left > 0:
 		_death_left = maxf(0.0, _death_left - delta)
 		_death_count.text = "Respawning in %d..." % int(ceil(_death_left))
+
+func is_paused() -> bool:
+	return _pause_panel.visible
 
 func _toggle_pause() -> void:
 	_pause_panel.visible = not _pause_panel.visible
@@ -307,6 +324,20 @@ func set_scoreboard_visible(v: bool) -> void:
 	if v:
 		_refresh_scores()
 
+func _on_round_reset(winner_name: String, winner_kills: int) -> void:
+	# Cierre de ciclo de 30 min: banner con el ganador y dashboard a cero.
+	_countdown.add_theme_font_size_override("font_size", 40)
+	_countdown.text = "ROUND WINNER: %s (%d kills)" % [winner_name, winner_kills]
+	_countdown.modulate.a = 1.0
+	Sfx.play("go")
+	var tw := create_tween()
+	tw.tween_interval(4.0)
+	tw.tween_property(_countdown, "modulate:a", 0.0, 0.6)
+	tw.tween_callback(func():
+		_countdown.text = ""
+		_countdown.modulate.a = 1.0
+		_countdown.add_theme_font_size_override("font_size", 84))
+
 func _on_countdown(seconds: float) -> void:
 	_run_countdown(int(round(seconds)))
 
@@ -336,6 +367,7 @@ func update_health_fx(h: int, max_h: int) -> void:
 
 var _current_weapon := 1
 var _unlocked_slots: Array[bool] = []
+var _click_hint: Label
 
 func set_weapon_index(index: int) -> void:
 	_current_weapon = index

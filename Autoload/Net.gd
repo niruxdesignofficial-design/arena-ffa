@@ -13,6 +13,7 @@ signal session_closed(reason: String)
 signal lobby_joined
 signal lan_search_done(hosts: Array)
 signal countdown_started(seconds: float)
+signal round_reset(winner_name: String, winner_kills: int)
 
 const PORT := 8910
 const DISCOVERY_PORT := 8911
@@ -36,7 +37,18 @@ var dedicated := false
 var leader_id := 1
 
 const COUNTDOWN_SECONDS := 3.0
-const BOT_NAMES: Array[String] = ["Ace", "Blaze", "Rocky", "Viper", "Nova", "Duke", "Pixel"]
+# Nombres tipo "jugador real" para que la sala parezca poblada.
+const BOT_NAMES: Array[String] = [
+	"Shadow23", "xKiraa", "NoScope_L", "Ferchu", "Dark_YT", "TrigZ",
+	"pau.exe", "KevinAR", "Lautaro7", "M4ti", "juampi", "Sofi_k",
+]
+const INFINITE_ROUND_SECONDS := 1800 # el dashboard se resetea cada 30 min
+const INFINITE_TARGET_PLAYERS := 6 # bots + humanos que mantiene el server
+const HISTORY_PATH := "user://match_history.json"
+
+# Partida única infinita (server dedicado): nunca termina; cada 30 min se
+# guarda el resultado en disco y el scoreboard arranca de cero.
+var infinite := false
 
 # Momento (reloj local) hasta el que el fuego está bloqueado (countdown).
 var _fire_unlock_at := 0.0
@@ -157,8 +169,8 @@ func _me_entry() -> Dictionary:
 # CALLBACKS DE CONEXIÓN
 
 func _on_peer_connected(id: int) -> void:
-	if is_session_server() and in_match:
-		# No se puede entrar con la ronda en curso.
+	if is_session_server() and in_match and not infinite:
+		# En salas por ronda no se puede entrar con la ronda en curso.
 		multiplayer.multiplayer_peer.disconnect_peer(id)
 
 func _on_peer_disconnected(id: int) -> void:
@@ -170,6 +182,7 @@ func _on_peer_disconnected(id: int) -> void:
 			var humans := players.keys().filter(func(k): return int(k) > 0)
 			humans.sort()
 			leader_id = humans[0] if not humans.is_empty() else 0
+		_balance_bots()
 		_broadcast_players()
 
 func _on_connected_to_server() -> void:
@@ -195,7 +208,7 @@ func srv_register(pname: String, character: String) -> void:
 	if not multiplayer.is_server():
 		return
 	var id := multiplayer.get_remote_sender_id()
-	if in_match:
+	if in_match and not infinite:
 		multiplayer.multiplayer_peer.disconnect_peer(id)
 		return
 	players[id] = {
@@ -205,7 +218,11 @@ func srv_register(pname: String, character: String) -> void:
 	}
 	if dedicated and (leader_id == 0 or not players.has(leader_id)):
 		leader_id = id
+	_balance_bots()
 	_broadcast_players()
+	if infinite and in_match:
+		# Drop-in: el nuevo jugador entra directo a la partida en curso.
+		cl_start_match.rpc_id(id)
 
 func _broadcast_players() -> void:
 	cl_sync_players.rpc(players, leader_id)
@@ -275,7 +292,7 @@ func _srv_do_add_bot() -> void:
 	_next_bot_id -= 1
 	var ids := CharacterLib.get_ids()
 	players[_next_bot_id] = {
-		"name": "BOT " + BOT_NAMES[absi(_next_bot_id) % BOT_NAMES.size()],
+		"name": BOT_NAMES[absi(_next_bot_id) % BOT_NAMES.size()],
 		"character": ids[absi(_next_bot_id) % maxi(ids.size(), 1)] if not ids.is_empty() else "",
 		"kills": 0, "deaths": 0, "streak": 0, "score": 0, "bot": true,
 	}
@@ -290,6 +307,89 @@ func _srv_do_remove_bot() -> void:
 	bot_ids.sort()
 	players.erase(bot_ids[0])
 	_broadcast_players()
+
+## Mantiene la sala poblada: en modo infinito el server suma/quita bots
+## para que siempre parezca una partida online real.
+func _balance_bots() -> void:
+	if not (is_session_server() and infinite):
+		return
+	var changed := false
+	while players.size() < INFINITE_TARGET_PLAYERS:
+		_next_bot_id -= 1
+		var ids := CharacterLib.get_ids()
+		players[_next_bot_id] = {
+			"name": BOT_NAMES[absi(_next_bot_id) % BOT_NAMES.size()],
+			"character": ids[absi(_next_bot_id) % maxi(ids.size(), 1)] if not ids.is_empty() else "",
+			"kills": 0, "deaths": 0, "streak": 0, "score": 0, "bot": true,
+		}
+		changed = true
+	# Si se llena de humanos, los bots van saliendo.
+	var bot_ids := players.keys().filter(func(k): return int(k) < 0)
+	while players.size() > MAX_PLAYERS and not bot_ids.is_empty():
+		players.erase(bot_ids.pop_back())
+		changed = true
+	if changed:
+		players_changed.emit()
+
+## Modo producción: partida única infinita con reset periódico del dashboard.
+func begin_infinite() -> void:
+	if not is_session_server():
+		return
+	infinite = true
+	round_seconds_total = INFINITE_ROUND_SECONDS if round_seconds_total == 300 else round_seconds_total
+	_balance_bots()
+	_broadcast_players()
+	start_match()
+	print("[Net] Infinite match started; dashboard resets every %d s" % round_seconds_total)
+
+## Fin de ciclo en modo infinito: guarda el resultado y arranca de cero
+## sin echar a nadie de la partida.
+func _soft_reset_round() -> void:
+	var winner: int = top_player_id()
+	var winner_name: String = String(players.get(winner, {}).get("name", "?"))
+	var winner_kills: int = int(players.get(winner, {}).get("kills", 0))
+	_save_history(winner_name)
+	for id in players:
+		players[id]["kills"] = 0
+		players[id]["deaths"] = 0
+		players[id]["streak"] = 0
+		players[id]["score"] = 0
+	round_seconds_left = round_seconds_total
+	_broadcast_players()
+	cl_round_reset.rpc(winner_name, winner_kills)
+	round_reset.emit(winner_name, winner_kills)
+	print("[Net] Dashboard reset; last winner: %s (%d kills)" % [winner_name, winner_kills])
+
+@rpc("authority", "reliable")
+func cl_round_reset(winner_name: String, winner_kills: int) -> void:
+	round_reset.emit(winner_name, winner_kills)
+
+## Historial en disco (user://match_history.json): un registro por ciclo.
+func _save_history(winner_name: String) -> void:
+	var history := []
+	if FileAccess.file_exists(HISTORY_PATH):
+		var parsed = JSON.parse_string(FileAccess.get_file_as_string(HISTORY_PATH))
+		if typeof(parsed) == TYPE_ARRAY:
+			history = parsed
+	var standings := []
+	for id in sorted_ids():
+		var pl: Dictionary = players[id]
+		standings.append({
+			"name": pl["name"], "kills": int(pl["kills"]),
+			"deaths": int(pl["deaths"]), "score": int(pl.get("score", 0)),
+		})
+	history.append({
+		"ended_at": Time.get_datetime_string_from_system(true),
+		"duration_seconds": round_seconds_total,
+		"winner": winner_name,
+		"standings": standings,
+	})
+	while history.size() > 100:
+		history.pop_front()
+	var f := FileAccess.open(HISTORY_PATH, FileAccess.WRITE)
+	if f:
+		f.store_string(JSON.stringify(history, "\t"))
+		f.close()
 
 # ARRANQUE DE PARTIDA
 
@@ -325,6 +425,7 @@ func cl_start_match() -> void:
 	_local_start_match()
 
 func _local_start_match() -> void:
+	print("[Net] entering match (scene -> Arena)")
 	in_match = true
 	round_seconds_left = round_seconds_total
 	last_results = {}
@@ -345,14 +446,9 @@ func srv_arena_ready() -> void:
 
 func _mark_arena_ready(id: int) -> void:
 	_arena_ready_peers[id] = true
-	# Spawn recién cuando TODOS los humanos cargaron (los bots no cargan nada).
-	for pid in players:
-		if int(pid) > 0 and not _arena_ready_peers.has(pid):
-			return
 	var arena := get_tree().current_scene
-	if arena and arena.has_method("spawn_all_players"):
-		arena.spawn_all_players()
-		begin_countdown()
+	if arena and arena.has_method("on_peer_ready"):
+		arena.on_peer_ready(id)
 
 ## Countdown de arranque: nadie puede disparar hasta que termina.
 func begin_countdown() -> void:
@@ -391,7 +487,8 @@ func register_kill(killer_id: int, victim_id: int, headshot := false) -> void:
 	_broadcast_players()
 	cl_kill_feed.rpc(feed)
 	kill_feed.emit(feed)
-	if killer_id != victim_id and players.has(killer_id) and players[killer_id]["kills"] >= kill_limit:
+	if not infinite and killer_id != victim_id and players.has(killer_id) \
+			and players[killer_id]["kills"] >= kill_limit:
 		end_round()
 
 @rpc("authority", "reliable")
@@ -411,7 +508,10 @@ func _tick_round(delta: float) -> void:
 	cl_time.rpc(round_seconds_left)
 	round_time_changed.emit(round_seconds_left)
 	if round_seconds_left <= 0:
-		end_round()
+		if infinite:
+			_soft_reset_round()
+		else:
+			end_round()
 
 @rpc("authority", "unreliable_ordered")
 func cl_time(seconds: int) -> void:

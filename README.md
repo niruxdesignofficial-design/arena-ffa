@@ -18,25 +18,28 @@ You need Godot 4.4.1 — there's a copy at `~/Downloads/Godot.app`
    python3 -m http.server 8091 --directory build/web
    ```
 3. Open `http://127.0.0.1:8091/` in a browser (one tab per player).
-   Menu → PLAY → pick your character and name → FIND MATCH → the first
-   player to join is the leader and presses START MATCH (and can ADD BOTs).
+   Menu → PLAY → pick your character and name → FIND MATCH → you drop
+   straight into the endless match. Click once to grab the mouse.
 
 It also runs **native**: open the project with Godot and use CREATE ROOM
 (LAN host) or JOIN BY IP. LAN discovery only exists on native builds.
 
 ## Rules
 
-- Free-for-all: first to **10 kills** wins, or whoever leads when the
-  **5 minutes** run out. Rounds start with a 3-2-1 countdown.
-- **Loadout**: you spawn with Knife + Pistol. The big guns are **map
-  pickups** on glowing pads (MAC-10, Shotgun, AK-47 on the central
-  platform, AWP on a rooftop). Dying sends you back to the starter loadout.
+- **One endless online match** (dedicated server): you drop straight into
+  the action — no lobby. The dashboard resets every **30 minutes**; each
+  cycle's results are saved on the server (`user://match_history.json`)
+  and the winner is announced to everyone.
+- The server keeps the room populated with server-driven players so the
+  match always feels alive.
+- LAN/hosted rooms (native CREATE ROOM) still play classic rounds:
+  first to 10 kills or best in 5 minutes, with a 3-2-1 countdown.
+- **All 6 weapons from the start** (keys 1-6 or mouse wheel): Knife,
+  Pistol, MAC-10 (auto), Shotgun, AK-47 (auto), AWP.
 - **Headshots** deal 1.5x damage (red hitmarker + ☠ in the feed).
 - **Damage falls off** with distance past half of each gun's range.
 - **Kills heal you +25 HP.** Medkits (+40) and spinning ammo boxes
   respawn around the map; climb the stacked crates to reach rooftops.
-- **BOTS**: the room leader can add/remove server-driven bots to play solo
-  or fill the match. Bots check line of sight before shooting.
 - Tab = live scoreboard (server-authoritative: clients never decide kills,
   score or order). ESC = pause. All sounds are 100% procedural (no assets).
 - Score: 100 per kill, +50 for headshots (SCORE column in the scoreboard).

@@ -145,6 +145,8 @@ func _build_rig() -> void:
 		mi.position.y = 0.85
 		rig_holder.add_child(mi)
 		return
+	# El GLB de Meshy mira hacia +Z; el frente del juego es -Z.
+	_rig.rotation_degrees.y = 180.0
 	rig_holder.add_child(_rig)
 	_attach_hand_prop()
 	_update_hand_prop()
@@ -206,6 +208,12 @@ func _input(event: InputEvent) -> void:
 	if not is_local() or is_dead or AutoTest.autopilot:
 		return
 	if Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
+		# En el navegador el pointer lock solo se puede pedir DENTRO de un
+		# gesto del usuario: capturar al hacer click sobre el juego.
+		if event is InputEventMouseButton and event.is_pressed():
+			var mhud := get_tree().get_first_node_in_group("match-ui")
+			if mhud == null or not mhud.is_paused():
+				Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
 		return
 	if event is InputEventMouseMotion:
 		var sens: float = GameSettings.mouse_sensitivity()
