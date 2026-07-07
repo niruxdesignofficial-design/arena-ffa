@@ -9,7 +9,7 @@ extends CharacterBody3D
 
 enum Anim { IDLE, WALK, RUN, AIR, DEAD }
 
-const MAX_HEALTH := 100
+const MAX_HEALTH := 200
 const WALK_SPEED := 6.0
 const SPRINT_SPEED := 8.8
 const CROUCH_SPEED := 2.8
