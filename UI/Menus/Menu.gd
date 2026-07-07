@@ -9,6 +9,7 @@ enum Screen { MAIN, SETTINGS, RESULTS }
 const FONT_PATH := "res://UI/Share_Tech_Mono_Font/ShareTechMono-Regular.ttf"
 const WALLPAPER := "res://UI/Menus/wallpaper.png"
 const TWITTER_URL := "https://x.com/CZshooterbnb"
+const FN_BUTTON := preload("res://UI/Menus/FNButton.gd")
 # Paleta neón moderna.
 const GOLD := Color(0.99, 0.78, 0.16)   # dorado neón (acento primario)
 const NEON := Color(0.16, 0.88, 1.0)    # cyan neón (acento secundario)
@@ -107,54 +108,39 @@ func _neon_box(accent: Color, glow: float, border_w: int, bg_a: float) -> StyleB
 	sb.anti_aliasing = true
 	return sb
 
+## Botón secundario estilo battle-royale: paralelogramo navy con borde cyan.
 func _button(text: String, size := 22) -> Button:
-	var b := Button.new()
+	var b: Button = FN_BUTTON.new()
 	b.text = text
-	b.add_theme_font_override("font", _font)
-	b.add_theme_font_size_override("font_size", size)
-	b.custom_minimum_size = Vector2(340, 46)
-	b.add_theme_stylebox_override("normal", _neon_box(Color(NEON.r, NEON.g, NEON.b, 0.5), 0.0, 1, 0.55))
-	b.add_theme_stylebox_override("hover", _neon_box(NEON, 0.35, 2, 0.7))
-	b.add_theme_stylebox_override("pressed", _neon_box(GOLD, 0.4, 2, 0.75))
-	b.add_theme_stylebox_override("focus", _neon_box(Color(NEON.r, NEON.g, NEON.b, 0.5), 0.0, 1, 0.55))
-	b.add_theme_color_override("font_color", Color(0.85, 0.95, 1.0))
-	b.add_theme_color_override("font_hover_color", Color(1, 1, 1))
-	b.add_theme_color_override("font_pressed_color", GOLD)
+	b.custom_minimum_size = Vector2(340, 48)
+	b.setup(_font, size,
+		Color(0.17, 0.24, 0.38), Color(0.07, 0.10, 0.20),
+		Color(0.32, 0.78, 1.0), Color(0.90, 0.96, 1.0))
 	b.pressed.connect(func(): Sfx.play("ui", -6.0))
 	return b
 
-## Botón primario neón (PLAY): borde dorado grueso, glow fuerte, relleno ámbar.
+## Botón primario (PLAY): paralelogramo dorado brillante con texto oscuro.
 func _gold_button(text: String, size := 24) -> Button:
-	var b := Button.new()
+	var b: Button = FN_BUTTON.new()
 	b.text = text
-	b.add_theme_font_override("font", _font)
-	b.add_theme_font_size_override("font_size", size)
-	b.custom_minimum_size = Vector2(340, 54)
-	var normal := _neon_box(GOLD, 0.35, 2, 0.7)
-	normal.bg_color = Color(0.22, 0.16, 0.03, 0.8)
-	var hover := _neon_box(GOLD, 0.6, 3, 0.85)
-	hover.bg_color = Color(0.32, 0.23, 0.05, 0.9)
-	b.add_theme_stylebox_override("normal", normal)
-	b.add_theme_stylebox_override("hover", hover)
-	b.add_theme_stylebox_override("pressed", hover.duplicate())
-	b.add_theme_stylebox_override("focus", normal.duplicate())
-	b.add_theme_color_override("font_color", Color(1, 0.92, 0.6))
-	b.add_theme_color_override("font_hover_color", Color(1, 1, 1))
+	b.custom_minimum_size = Vector2(340, 60)
+	b.setup(_font, size,
+		Color(1.0, 0.86, 0.30), Color(0.86, 0.55, 0.05),
+		Color(1.0, 0.97, 0.72), Color(0.16, 0.10, 0.0))
 	b.pressed.connect(func(): Sfx.play("ui", -6.0))
 	return b
 
-func _panel_style(border := NEON) -> StyleBoxFlat:
+func _panel_style(border := GOLD) -> StyleBoxFlat:
 	var sb := StyleBoxFlat.new()
-	sb.bg_color = GLASS
-	sb.border_color = Color(border.r, border.g, border.b, 0.55)
-	sb.set_border_width_all(1)
-	# Acento más grueso arriba (barra de color estilo HUD moderno).
-	sb.border_width_top = 3
+	sb.bg_color = Color(0.04, 0.06, 0.11, 0.93)
 	sb.border_color = border
-	sb.set_corner_radius_all(12)
+	sb.set_border_width_all(2)
+	# Barra de acento gruesa arriba (firma del look battle-royale).
+	sb.border_width_top = 6
+	sb.set_corner_radius_all(4)
 	sb.set_content_margin_all(28)
-	sb.shadow_color = Color(border.r, border.g, border.b, 0.22)
-	sb.shadow_size = 16
+	sb.shadow_color = Color(border.r, border.g, border.b, 0.30)
+	sb.shadow_size = 20
 	sb.anti_aliasing = true
 	return sb
 
@@ -347,13 +333,13 @@ func _build_main() -> Control:
 
 	# Botón principal: entrar al server real (partida en vivo; los amigos
 	# pueden caer en la MISMA sala). Con carga estilo juego real.
-	var play := _gold_button("▶  PLAY", 24)
+	var play := _gold_button("PLAY", 26)
 	play.pressed.connect(_join_community)
 	box.add_child(play)
 
 	# Estado del server: una sola sala online donde entran todos.
 	var status := _label(13, Color(0.4, 0.9, 0.5))
-	status.text = "●  LIVE SERVER  ·  one shared arena — everyone joins here"
+	status.text = "LIVE SERVER  ·  one shared arena — everyone joins here"
 	status.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	box.add_child(status)
 
