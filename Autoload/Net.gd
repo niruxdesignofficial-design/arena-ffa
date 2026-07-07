@@ -48,7 +48,8 @@ const BOT_NAMES: Array[String] = [
 	"pau.exe", "KevinAR", "Lautaro7", "M4ti", "juampi", "Sofi_k",
 ]
 const INFINITE_ROUND_SECONDS := 1800 # el dashboard se resetea cada 30 min
-const INFINITE_TARGET_PLAYERS := 6 # bots + humanos que mantiene el server
+const MAX_BOTS := 2 # solo 1-2 bots de relleno; se van cuando entra gente
+const MIN_LIVELY := 3 # total (humanos+bots) al que apuntamos con pocos jugadores
 const HISTORY_PATH := "user://match_history.json"
 
 # Partida única infinita (server dedicado): nunca termina; cada 30 min se
@@ -412,11 +413,19 @@ func _srv_do_remove_bot() -> void:
 
 ## Mantiene la sala poblada: en modo infinito el server suma/quita bots
 ## para que siempre parezca una partida online real.
+## Mantiene solo 1-2 bots de relleno para que la sala no se sienta vacía,
+## y los saca a medida que entran humanos (con 3+ personas: 0 bots).
 func _balance_bots() -> void:
 	if not (is_session_server() and infinite):
 		return
+	var humans := players.keys().filter(func(k): return int(k) > 0).size()
+	# Con pocos jugadores apuntamos a MIN_LIVELY total; los bots cubren la
+	# diferencia, tope MAX_BOTS. Con 3+ humanos no queda ningún bot.
+	var desired_bots := clampi(MIN_LIVELY - humans, 0, MAX_BOTS)
+	var bot_ids := players.keys().filter(func(k): return int(k) < 0)
 	var changed := false
-	while players.size() < INFINITE_TARGET_PLAYERS:
+	# Agregar bots hasta el objetivo.
+	while bot_ids.size() < desired_bots and players.size() < MAX_PLAYERS:
 		_next_bot_id -= 1
 		var ids := CharacterLib.get_ids()
 		players[_next_bot_id] = {
@@ -424,10 +433,10 @@ func _balance_bots() -> void:
 			"character": ids[absi(_next_bot_id) % maxi(ids.size(), 1)] if not ids.is_empty() else "",
 			"kills": 0, "deaths": 0, "streak": 0, "score": 0, "bot": true,
 		}
+		bot_ids.append(_next_bot_id)
 		changed = true
-	# Si se llena de humanos, los bots van saliendo.
-	var bot_ids := players.keys().filter(func(k): return int(k) < 0)
-	while players.size() > MAX_PLAYERS and not bot_ids.is_empty():
+	# Sacar los bots que sobren (entró gente).
+	while bot_ids.size() > desired_bots:
 		players.erase(bot_ids.pop_back())
 		changed = true
 	if changed:
