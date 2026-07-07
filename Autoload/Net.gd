@@ -18,6 +18,9 @@ signal connecting_changed(message: String)
 signal chat_message(pname: String, text: String)
 signal streak_announce(title: String)
 signal hall_changed
+# El server real (online) ya está despierto y acepta conexiones WebSocket.
+# Lo emite el "probe" que corre mientras jugás la partida de calentamiento.
+signal server_ready
 
 const PORT := 8910
 const DISCOVERY_PORT := 8911
@@ -57,6 +60,10 @@ const HISTORY_PATH := "user://match_history.json"
 var infinite := false
 # Dirección a la que conectarse una vez cargada la Arena (drop-in flow).
 var pending_join := ""
+# Entrada instantánea: al tocar PLAY se juega YA una partida local (bots)
+# mientras un "probe" en segundo plano espera a que el server real despierte;
+# cuando está listo, la Arena recarga y te pasa a la sala online compartida.
+var instant_warmup := false
 # Último error de sesión, para que el menú lo muestre al volver.
 var last_error := ""
 
@@ -75,6 +82,11 @@ var _next_bot_id := 0
 var _awaiting_connect := false
 var _connect_url := ""
 var _connect_deadline := 0.0
+# Probe de disponibilidad (WebSocket crudo, aparte de la sesión de juego).
+var _probe: WebSocketPeer = null
+var _probe_url := ""
+var _probe_deadline := 0.0
+var _probe_retry_at := 0.0
 var _ping_accum := 0.0
 var _chat_last_at := {}
 
@@ -97,6 +109,54 @@ func _process(delta: float) -> void:
 	_poll_discovery()
 	_tick_round(delta)
 	_tick_ping(delta)
+	_poll_probe()
+
+# PROBE DE DISPONIBILIDAD DEL SERVER (para la entrada instantánea)
+# Mientras jugás la partida de calentamiento (local), un WebSocket crudo
+# —independiente de la sesión— intenta abrir contra el server real. Cuando
+# el handshake WS abre (server despierto), emite server_ready. Reintenta
+# solito si Render todavía está arrancando (cierra la conexión → 502).
+
+func start_ready_probe(address: String) -> void:
+	var url := _resolve_url(address)
+	if url.is_empty():
+		return
+	_probe_url = url
+	_probe_deadline = Time.get_ticks_msec() / 1000.0 + 180.0
+	_probe_retry_at = 0.0
+	_probe = WebSocketPeer.new()
+	if _probe.connect_to_url(url) != OK:
+		_probe = null
+
+func stop_ready_probe() -> void:
+	if _probe != null:
+		_probe.close()
+	_probe = null
+	_probe_url = ""
+
+func _poll_probe() -> void:
+	if _probe == null:
+		return
+	_probe.poll()
+	var st := _probe.get_ready_state()
+	if st == WebSocketPeer.STATE_OPEN:
+		# El server aceptó el handshake WS: está despierto y escuchando.
+		stop_ready_probe()
+		server_ready.emit()
+		return
+	var now := Time.get_ticks_msec() / 1000.0
+	if st == WebSocketPeer.STATE_CLOSED:
+		# Render devolvió error mientras arranca: reintentar hasta el deadline.
+		if now >= _probe_deadline:
+			stop_ready_probe()
+			return
+		if _probe_retry_at == 0.0:
+			_probe_retry_at = now + 2.0
+		elif now >= _probe_retry_at:
+			_probe_retry_at = 0.0
+			_probe = WebSocketPeer.new()
+			if _probe.connect_to_url(_probe_url) != OK:
+				_probe = null
 
 # PING (cliente -> server -> cliente)
 
@@ -188,10 +248,12 @@ func host_dedicated() -> String:
 ## Dominios pelados (ej. mi-server.onrender.com) asumen wss:// (TLS, puerto
 ## 443): es lo que usan Render y cualquier hosting detrás de proxy https.
 ## Resultado async: lobby_joined / session_closed.
-func join(address: String) -> String:
+## Normaliza una dirección (IP, host:puerto, dominio o URL) a ws(s)://.
+## Dominios pelados asumen wss:// (TLS/443); IP/localhost asumen ws://.
+func _resolve_url(address: String) -> String:
 	var url := address.strip_edges()
 	if url.is_empty():
-		return "Invalid address"
+		return ""
 	if not url.begins_with("ws://") and not url.begins_with("wss://"):
 		var bare := url.split(":")[0]
 		if bare.is_valid_ip_address() or bare == "localhost":
@@ -200,6 +262,12 @@ func join(address: String) -> String:
 			url = "ws://%s" % url
 		else:
 			url = "wss://%s" % url
+	return url
+
+func join(address: String) -> String:
+	var url := _resolve_url(address)
+	if url.is_empty():
+		return "Invalid address"
 	# Juego ONLINE: una sola sala compartida. Si el server de Render está
 	# dormido tarda ~50s en despertar; reintentamos hasta 90s (sin caer a
 	# offline: todos tienen que entrar a la MISMA partida).
@@ -229,6 +297,7 @@ func _watch_connect() -> void:
 
 func leave() -> void:
 	_stop_discovery()
+	stop_ready_probe()
 	_awaiting_connect = false
 	if multiplayer.multiplayer_peer != null:
 		multiplayer.multiplayer_peer.close()

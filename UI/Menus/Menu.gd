@@ -465,9 +465,12 @@ func _play_offline() -> void:
 	Net.host_offline()
 	Net.begin_infinite()
 
-## Online con amigos: conecta al server compartido (puede tardar en despertar).
+## Online con amigos: entrás a jugar YA (partida local instantánea) y en
+## segundo plano se conecta al server real; cuando despierta te pasa a la
+## sala compartida sin que esperes ninguna pantalla de carga.
 func _join_community() -> void:
 	_save_identity()
+	Net.instant_warmup = true
 	_join_flow(_server_edit.text)
 
 func _on_host_pressed() -> void:

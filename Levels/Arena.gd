@@ -63,7 +63,19 @@ func _ready() -> void:
 	if Net.is_session_server():
 		Net.players_changed.connect(_reconcile_players)
 	Net.session_closed.connect(_on_session_lost)
-	if not Net.session_active() and not Net.pending_join.is_empty():
+	if not Net.session_active() and Net.instant_warmup and not Net.pending_join.is_empty():
+		# ENTRADA INSTANTÁNEA: jugás YA una partida local (bots) mientras un
+		# probe espera a que el server real despierte. Al estar listo, se
+		# recarga la Arena y te pasa a la sala online compartida.
+		var addr := Net.pending_join
+		Net.pending_join = ""
+		Net.host_offline()
+		Net.begin_infinite()
+		Net.notify_arena_ready.call_deferred()
+		_build_warmup_banner()
+		Net.server_ready.connect(_on_server_ready.bind(addr), CONNECT_ONE_SHOT)
+		Net.start_ready_probe(addr)
+	elif not Net.session_active() and not Net.pending_join.is_empty():
 		# Cliente entrando al server compartido: pantalla de carga + conectar.
 		_build_connect_overlay()
 		Net.connecting_changed.connect(_on_connecting)
@@ -164,6 +176,46 @@ func _on_connecting(message: String) -> void:
 	var waited := Time.get_ticks_msec() / 1000.0 - _connect_started_at
 	if waited > 5.0:
 		_connect_sub.text = "the free server may be waking up — hang tight"
+
+## Aviso chico (esquina) mientras conecta al server real en segundo plano,
+## sin tapar el juego. Se saca solo cuando pasás a online.
+var _warmup_banner: Label
+func _build_warmup_banner() -> void:
+	var layer := CanvasLayer.new()
+	layer.layer = 18
+	add_child(layer)
+	var font := load("res://UI/Share_Tech_Mono_Font/ShareTechMono-Regular.ttf")
+	_warmup_banner = Label.new()
+	_warmup_banner.add_theme_font_override("font", font)
+	_warmup_banner.add_theme_font_size_override("font_size", 15)
+	_warmup_banner.add_theme_color_override("font_color", Color(0.42, 0.92, 0.55))
+	_warmup_banner.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.9))
+	_warmup_banner.add_theme_constant_override("outline_size", 5)
+	_warmup_banner.text = "warming up  ·  connecting to live players..."
+	_warmup_banner.set_anchors_preset(Control.PRESET_CENTER_TOP)
+	_warmup_banner.anchor_left = 0.5
+	_warmup_banner.anchor_right = 0.5
+	_warmup_banner.offset_left = -260
+	_warmup_banner.offset_right = 260
+	_warmup_banner.offset_top = 16
+	_warmup_banner.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	layer.add_child(_warmup_banner)
+	# Pulso suave para que se note que está trabajando.
+	var tw := create_tween().set_loops()
+	tw.tween_property(_warmup_banner, "modulate:a", 0.45, 0.8)
+	tw.tween_property(_warmup_banner, "modulate:a", 1.0, 0.8)
+
+## El server real despertó: soltar la partida de calentamiento y recargar la
+## Arena como cliente online (el server ya está caliente → entra en ~1-2s).
+func _on_server_ready(addr: String) -> void:
+	if not is_inside_tree():
+		return
+	if is_instance_valid(_warmup_banner):
+		_warmup_banner.text = "live server ready  ·  joining..."
+	Net.leave()
+	Net.instant_warmup = false
+	Net.pending_join = addr
+	Transition.change_scene(Net.ARENA_SCENE)
 
 func _on_session_lost(reason: String) -> void:
 	# El server no respondió: volver al menú con el mensaje (juego online-only).
