@@ -279,7 +279,7 @@ func _on_connection_failed() -> void:
 	# Reintentamos (reemplazando el peer directamente, sin dejarlo en null)
 	# hasta el deadline, para entrar a la sala compartida.
 	if _awaiting_connect and Time.get_ticks_msec() / 1000.0 < _connect_deadline:
-		get_tree().create_timer(3.0).timeout.connect(func():
+		get_tree().create_timer(2.0).timeout.connect(func():
 			if _awaiting_connect:
 				var p := WebSocketMultiplayerPeer.new()
 				if p.create_client(_connect_url) == OK:

@@ -10,6 +10,9 @@ const FONT_PATH := "res://UI/Share_Tech_Mono_Font/ShareTechMono-Regular.ttf"
 const WALLPAPER := "res://UI/Menus/wallpaper.png"
 const TWITTER_URL := "https://x.com/CZshooterbnb"
 const FN_BUTTON := preload("res://UI/Menus/FNButton.gd")
+# Server canónico del juego (la ÚNICA sala compartida). Se usa por defecto en
+# web sin importar el dominio del sitio (czshooter.xyz, onrender, etc.).
+const DEFAULT_SERVER := "arena-ffa-server.onrender.com"
 # Paleta neón moderna.
 const GOLD := Color(0.99, 0.78, 0.16)   # dorado neón (acento primario)
 const NEON := Color(0.16, 0.88, 1.0)    # cyan neón (acento secundario)
@@ -491,17 +494,22 @@ func _join_flow(address: String) -> void:
 	Transition.change_scene(Net.ARENA_SCENE)
 
 func _default_server_address() -> String:
-	if not GameSettings.last_server.is_empty():
-		return GameSettings.last_server
+	var saved := GameSettings.last_server.strip_edges()
 	if OS.has_feature("web"):
+		var host := ""
 		var host_str = JavaScriptBridge.eval("location.hostname", true)
-		if host_str != null and not String(host_str).is_empty():
-			var h := String(host_str)
-			# La página es "...-web.onrender.com"; el SERVIDOR del juego es
-			# "...-server.onrender.com". Sugerir la del servidor, no la web.
-			if h.contains("-web."):
-				return h.replace("-web.", "-server.")
-			return h
+		if host_str != null:
+			host = String(host_str)
+		# Usar el server real del juego cuando lo guardado está vacío o apunta a
+		# la PROPIA web (sitio estático): czshooter.xyz, *-web.onrender.com, o el
+		# mismo hostname de la página. Así nunca se conecta al front por error.
+		var points_to_front := saved == host or saved.contains("-web.") or saved.contains("czshooter.xyz")
+		if saved.is_empty() or points_to_front:
+			return DEFAULT_SERVER
+		return saved
+	# Nativo (desarrollo local).
+	if not saved.is_empty():
+		return saved
 	return "127.0.0.1"
 
 # AJUSTES
