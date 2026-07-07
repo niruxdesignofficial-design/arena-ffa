@@ -199,31 +199,32 @@ func join(address: String) -> String:
 			url = "ws://%s" % url
 		else:
 			url = "wss://%s" % url
-	# Intento único de conexión. La Arena muestra la carga y, si no conecta
-	# rápido (server dormido en Render), cae a jugar offline sola (~8s).
+	# Juego ONLINE: una sola sala compartida. Si el server de Render está
+	# dormido tarda ~50s en despertar; reintentamos hasta 90s (sin caer a
+	# offline: todos tienen que entrar a la MISMA partida).
+	_connect_url = url
+	_connect_deadline = Time.get_ticks_msec() / 1000.0 + 90.0
+	_awaiting_connect = true
 	var peer := WebSocketMultiplayerPeer.new()
 	if peer.create_client(url) != OK:
 		return "Invalid address"
 	multiplayer.multiplayer_peer = peer
-	_connect_deadline = Time.get_ticks_msec() / 1000.0 + 15.0
-	_awaiting_connect = true
 	connecting_changed.emit("Connecting to the server...")
 	get_tree().create_timer(1.0).timeout.connect(_watch_connect)
 	return ""
 
-## Solo para el timeout duro (por si connection_failed nunca llega): si a los
-## 15s no conectó, se rinde. El fallback rápido a offline lo maneja la Arena.
 func _watch_connect() -> void:
 	if not _awaiting_connect:
 		return
 	if Time.get_ticks_msec() / 1000.0 >= _connect_deadline:
 		_awaiting_connect = false
 		leave()
-		last_error = "Couldn't reach the server."
+		last_error = "Couldn't reach the server. It may be waking up — try again in a moment."
 		session_closed.emit(last_error)
 		return
-	connecting_changed.emit("Connecting to the server...")
-	get_tree().create_timer(1.0).timeout.connect(_watch_connect)
+	var left := int(_connect_deadline - Time.get_ticks_msec() / 1000.0)
+	connecting_changed.emit("Waking up the server... (%ds)" % left if left < 84 else "Connecting to the server...")
+	get_tree().create_timer(1.5).timeout.connect(_watch_connect)
 
 func leave() -> void:
 	_stop_discovery()
@@ -273,10 +274,19 @@ func _on_connected_to_server() -> void:
 		GameSettings.character_id if not GameSettings.character_id.is_empty() else CharacterLib.default_id())
 
 func _on_connection_failed() -> void:
-	# El server no respondió (dormido/caído): la Arena cae a offline al toque.
+	# El server dormido de Render rechaza el primer intento mientras arranca.
+	# Reintentamos (reemplazando el peer directamente, sin dejarlo en null)
+	# hasta el deadline, para entrar a la sala compartida.
+	if _awaiting_connect and Time.get_ticks_msec() / 1000.0 < _connect_deadline:
+		get_tree().create_timer(3.0).timeout.connect(func():
+			if _awaiting_connect:
+				var p := WebSocketMultiplayerPeer.new()
+				if p.create_client(_connect_url) == OK:
+					multiplayer.multiplayer_peer = p)
+		return
 	_awaiting_connect = false
 	leave()
-	last_error = "Couldn't connect to the server."
+	last_error = "Couldn't connect to the server. Try again in a moment."
 	session_closed.emit(last_error)
 
 func _on_server_disconnected() -> void:

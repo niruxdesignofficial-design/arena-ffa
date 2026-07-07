@@ -64,16 +64,17 @@ func _ready() -> void:
 		Net.players_changed.connect(_reconcile_players)
 	Net.session_closed.connect(_on_session_lost)
 	if not Net.session_active() and not Net.pending_join.is_empty():
-		# Cliente entrando a un server remoto: pantalla de carga + conectar.
+		# Cliente entrando al server compartido: pantalla de carga + conectar.
 		_build_connect_overlay()
 		Net.connecting_changed.connect(_on_connecting)
 		var addr := Net.pending_join
 		Net.pending_join = ""
 		var err := Net.join(addr)
 		if not err.is_empty():
-			_fallback_offline()
+			Net.last_error = err
+			Transition.change_scene(Net.MENU_SCENE)
 	else:
-		# Ya hay sesión (host local / práctica offline): arrancar directo.
+		# Ya hay sesión (host local): arrancar directo.
 		Net.notify_arena_ready.call_deferred()
 
 # Pantalla de carga estilo juego real mientras conecta al server.
@@ -120,13 +121,17 @@ func _build_connect_overlay() -> void:
 	_connect_sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_connect_sub.text = ""
 	vb.add_child(_connect_sub)
+	# Botón para cancelar y volver al menú (si el server no responde).
 	_offline_btn = Button.new()
 	_offline_btn.add_theme_font_override("font", font)
-	_offline_btn.add_theme_font_size_override("font_size", 20)
-	_offline_btn.text = "▶  PLAY NOW"
-	_offline_btn.custom_minimum_size = Vector2(280, 48)
+	_offline_btn.add_theme_font_size_override("font_size", 16)
+	_offline_btn.flat = true
+	_offline_btn.add_theme_color_override("font_color", Color(1, 1, 1, 0.6))
+	_offline_btn.text = "Cancel"
 	_offline_btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-	_offline_btn.pressed.connect(_fallback_offline)
+	_offline_btn.pressed.connect(func():
+		Net.leave()
+		Transition.change_scene(Net.MENU_SCENE))
 	vb.add_child(_offline_btn)
 	# Link a X / Twitter en la pantalla de carga.
 	var x_btn := Button.new()
@@ -155,31 +160,17 @@ func _on_connecting(message: String) -> void:
 			if is_instance_valid(_connect_overlay):
 				_connect_overlay.visible = false)
 		return
-	var elapsed := Time.get_ticks_msec() / 1000.0 - _connect_started_at
-	# Si el server tarda (dormido en Render), caemos a jugar YA automáticamente.
-	if elapsed > AUTO_OFFLINE_AFTER:
-		_fallback_offline()
-		return
-	_connect_label.text = "LOADING MATCH..."
-	_connect_sub.text = "starting in %d..." % int(ceil(AUTO_OFFLINE_AFTER - elapsed))
+	_connect_label.text = message.to_upper()
+	var waited := Time.get_ticks_msec() / 1000.0 - _connect_started_at
+	if waited > 5.0:
+		_connect_sub.text = "the free server may be waking up — hang tight"
 
-var _fell_back := false
-
-func _fallback_offline() -> void:
-	# Jugar YA sin server: partida local con jugadores simulados.
-	if _fell_back:
-		return
-	_fell_back = true
-	Net.leave()
-	Net.host_offline()
-	Net.begin_infinite()
-	_on_connecting("") # ocultar la pantalla de carga
-
-func _on_session_lost(_reason: String) -> void:
-	# Si el server no respondió, en vez de volver al menú arrancamos offline
-	# para que SIEMPRE se pueda jugar.
+func _on_session_lost(reason: String) -> void:
+	# El server no respondió: volver al menú con el mensaje (juego online-only).
 	if is_inside_tree() and not Net.session_active():
-		_fallback_offline()
+		Net.last_error = reason
+		Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
+		Transition.change_scene(Net.MENU_SCENE)
 
 func _physics_process(_delta: float) -> void:
 	if multiplayer.is_server():

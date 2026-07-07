@@ -8,6 +8,8 @@ enum Screen { MAIN, SETTINGS, RESULTS }
 
 const FONT_PATH := "res://UI/Share_Tech_Mono_Font/ShareTechMono-Regular.ttf"
 const WALLPAPER := "res://UI/Menus/wallpaper.png"
+const BUTTON_FRAME := "res://UI/Kenney/button_frame.png"
+const PANEL_FRAME := "res://UI/Kenney/panel_frame_ornate.png"
 const TWITTER_URL := "https://x.com/CZshooterbnb"
 const GOLD := Color(0.953, 0.729, 0.184)
 const BLUE := Color(0.235, 0.604, 0.831)
@@ -117,7 +119,22 @@ func _button(text: String, size := 22) -> Button:
 	b.add_theme_color_override("font_hover_color", Color(1, 1, 1))
 	b.add_theme_color_override("font_pressed_color", GOLD)
 	b.pressed.connect(func(): Sfx.play("ui", -6.0))
+	# Marco ornamentado Kenney (borde dorado sobre el relleno oscuro).
+	_add_frame(b, GOLD)
 	return b
+
+## Superpone un marco 9-slice de Kenney (line-art tintado) sobre un control.
+func _add_frame(ctrl: Control, tint: Color, tex := BUTTON_FRAME, margin := 30) -> void:
+	var frame := NinePatchRect.new()
+	frame.texture = load(tex)
+	frame.patch_margin_left = margin
+	frame.patch_margin_right = margin
+	frame.patch_margin_top = margin
+	frame.patch_margin_bottom = margin
+	frame.set_anchors_preset(Control.PRESET_FULL_RECT)
+	frame.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	frame.modulate = tint
+	ctrl.add_child(frame)
 
 func _gold_button(text: String, size := 24) -> Button:
 	var b := _button(text, size)
@@ -132,13 +149,28 @@ func _gold_button(text: String, size := 24) -> Button:
 func _panel_style(border := BLUE) -> StyleBoxFlat:
 	var sb := StyleBoxFlat.new()
 	sb.bg_color = PANEL_BG
-	sb.border_color = Color(border.r, border.g, border.b, 0.45)
-	sb.set_border_width_all(2)
-	sb.set_corner_radius_all(12)
-	sb.set_content_margin_all(24)
+	sb.border_color = Color(border.r, border.g, border.b, 0.0)
+	sb.set_corner_radius_all(10)
+	sb.set_content_margin_all(30)
 	sb.shadow_color = Color(0, 0, 0, 0.6)
-	sb.shadow_size = 20
+	sb.shadow_size = 22
 	return sb
+
+## Panel con fondo oscuro + marco ornamentado dorado de Kenney encima.
+func _framed_panel(border := GOLD) -> PanelContainer:
+	var p := PanelContainer.new()
+	p.add_theme_stylebox_override("panel", _panel_style(border))
+	var frame := NinePatchRect.new()
+	frame.texture = load(PANEL_FRAME)
+	frame.patch_margin_left = 34
+	frame.patch_margin_right = 34
+	frame.patch_margin_top = 34
+	frame.patch_margin_bottom = 34
+	frame.set_anchors_preset(Control.PRESET_FULL_RECT)
+	frame.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	frame.modulate = Color(border.r, border.g, border.b, 0.85)
+	p.add_child(frame)
+	return p
 
 func _screen_root() -> Control:
 	var c := Control.new()
@@ -233,15 +265,14 @@ func _build_main() -> Control:
 	x_btn.pressed.connect(func(): OS.shell_open(TWITTER_URL))
 	root.add_child(x_btn)
 
-	var panel := PanelContainer.new()
-	panel.add_theme_stylebox_override("panel", _panel_style())
+	var panel := _framed_panel(GOLD)
 	panel.set_anchors_preset(Control.PRESET_CENTER_BOTTOM)
 	panel.anchor_left = 0.5
 	panel.anchor_right = 0.5
-	panel.offset_left = -260
-	panel.offset_right = 260
+	panel.offset_left = -270
+	panel.offset_right = 270
 	panel.offset_bottom = -40
-	panel.offset_top = -358
+	panel.offset_top = -368
 	root.add_child(panel)
 	var box := VBoxContainer.new()
 	box.add_theme_constant_override("separation", 10)
@@ -293,17 +324,11 @@ func _build_main() -> Control:
 	play.pressed.connect(_join_community)
 	box.add_child(play)
 
-	# Estado del server (se ve "en vivo" como un juego real).
+	# Estado del server: una sola sala online donde entran todos.
 	var status := _label(13, Color(0.4, 0.9, 0.5))
-	status.text = "●  LIVE SERVER  ·  drop into the ongoing match"
+	status.text = "●  LIVE SERVER  ·  one shared arena — everyone joins here"
 	status.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	box.add_child(status)
-
-	# Práctica sin conexión (arranca al instante; para cuando el server no anda).
-	var practice := _button("Practice offline", 13)
-	practice.custom_minimum_size = Vector2(200, 30)
-	practice.pressed.connect(_play_offline)
-	box.add_child(practice)
 
 	var srv_row := HBoxContainer.new()
 	srv_row.alignment = BoxContainer.ALIGNMENT_CENTER
@@ -472,8 +497,7 @@ func _build_settings() -> Control:
 	var center := CenterContainer.new()
 	center.set_anchors_preset(Control.PRESET_FULL_RECT)
 	root.add_child(center)
-	var panel := PanelContainer.new()
-	panel.add_theme_stylebox_override("panel", _panel_style())
+	var panel := _framed_panel(GOLD)
 	center.add_child(panel)
 	var box := VBoxContainer.new()
 	box.add_theme_constant_override("separation", 10)
