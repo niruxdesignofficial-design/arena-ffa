@@ -404,7 +404,12 @@ func _default_server_address() -> String:
 	if OS.has_feature("web"):
 		var host_str = JavaScriptBridge.eval("location.hostname", true)
 		if host_str != null and not String(host_str).is_empty():
-			return String(host_str)
+			var h := String(host_str)
+			# La página es "...-web.onrender.com"; el SERVIDOR del juego es
+			# "...-server.onrender.com". Sugerir la del servidor, no la web.
+			if h.contains("-web."):
+				return h.replace("-web.", "-server.")
+			return h
 	return "127.0.0.1"
 
 # AJUSTES

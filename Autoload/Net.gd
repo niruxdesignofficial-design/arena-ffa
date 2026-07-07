@@ -14,6 +14,7 @@ signal lobby_joined
 signal lan_search_done(hosts: Array)
 signal countdown_started(seconds: float)
 signal round_reset(winner_name: String, winner_kills: int)
+signal connecting_changed(message: String)
 signal chat_message(pname: String, text: String)
 signal streak_announce(title: String)
 signal hall_changed
@@ -70,6 +71,8 @@ var hall_top: Array = [] # [{name, kills}] top-3 all-time
 var _fire_unlock_at := 0.0
 var _next_bot_id := 0
 var _awaiting_connect := false
+var _connect_url := ""
+var _connect_deadline := 0.0
 var _ping_accum := 0.0
 var _chat_last_at := {}
 
@@ -183,19 +186,39 @@ func join(address: String) -> String:
 			url = "ws://%s" % url
 		else:
 			url = "wss://%s" % url
-	var peer := WebSocketMultiplayerPeer.new()
-	if peer.create_client(url) != OK:
-		return "Invalid address"
-	multiplayer.multiplayer_peer = peer
+	# El plan gratis de Render duerme el servidor y tarda ~1 min en despertar,
+	# devolviendo errores mientras arranca. Reintentamos durante 90s.
+	_connect_url = url
+	_connect_deadline = Time.get_ticks_msec() / 1000.0 + 90.0
 	_awaiting_connect = true
-	# Si en 8s no conectó, avisar en vez de dejar "Connecting..." infinito.
-	get_tree().create_timer(8.0).timeout.connect(func():
-		if _awaiting_connect:
-			_awaiting_connect = false
-			leave()
-			last_error = "Couldn't reach the server."
-			session_closed.emit(last_error))
+	connecting_changed.emit("Connecting to the server...")
+	if not _attempt_connect():
+		return "Invalid address"
+	get_tree().create_timer(1.0).timeout.connect(_watch_connect)
 	return ""
+
+func _attempt_connect() -> bool:
+	var peer := WebSocketMultiplayerPeer.new()
+	if peer.create_client(_connect_url) != OK:
+		return false
+	multiplayer.multiplayer_peer = peer
+	return true
+
+## Chequea cada segundo: si sigue sin conectar, reintenta (server despertando)
+## hasta el deadline; ahí sí se rinde con un mensaje claro.
+func _watch_connect() -> void:
+	if not _awaiting_connect:
+		return
+	if Time.get_ticks_msec() / 1000.0 >= _connect_deadline:
+		_awaiting_connect = false
+		leave()
+		last_error = "Couldn't reach the server. If it's on Render's free tier, wait a minute and try again (it was asleep)."
+		session_closed.emit(last_error)
+		return
+	# WebSocketMultiplayerPeer sigue intentando solo; solo mostramos progreso.
+	var left := int(_connect_deadline - Time.get_ticks_msec() / 1000.0)
+	connecting_changed.emit("Waking up the server... (%ds)" % left)
+	get_tree().create_timer(1.5).timeout.connect(_watch_connect)
 
 func leave() -> void:
 	_stop_discovery()
@@ -238,10 +261,19 @@ func _on_peer_disconnected(id: int) -> void:
 
 func _on_connected_to_server() -> void:
 	_awaiting_connect = false
+	connecting_changed.emit("")
 	srv_register.rpc_id(1, GameSettings.player_name,
 		GameSettings.character_id if not GameSettings.character_id.is_empty() else CharacterLib.default_id())
 
 func _on_connection_failed() -> void:
+	# En Render el server dormido rechaza el primer intento: si todavía
+	# estamos dentro de la ventana de espera, reintentamos en vez de rendirnos.
+	if _awaiting_connect and Time.get_ticks_msec() / 1000.0 < _connect_deadline:
+		multiplayer.multiplayer_peer = null
+		get_tree().create_timer(3.0).timeout.connect(func():
+			if _awaiting_connect:
+				_attempt_connect())
+		return
 	_awaiting_connect = false
 	leave()
 	last_error = "Couldn't connect to the server."

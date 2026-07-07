@@ -63,6 +63,9 @@ func _ready() -> void:
 	if Net.is_session_server():
 		Net.players_changed.connect(_reconcile_players)
 	Net.session_closed.connect(_on_session_lost)
+	if not Net.dedicated:
+		_build_connect_overlay()
+		Net.connecting_changed.connect(_on_connecting)
 	if not Net.session_active() and not Net.pending_join.is_empty():
 		# Cliente entrando a un server remoto: conectar recién ahora.
 		var addr := Net.pending_join
@@ -73,6 +76,29 @@ func _ready() -> void:
 			Transition.change_scene(Net.MENU_SCENE)
 	else:
 		Net.notify_arena_ready.call_deferred()
+
+# Cartel de conexión mientras el server (dormido en Render) despierta.
+var _connect_label: Label
+
+func _build_connect_overlay() -> void:
+	var layer := CanvasLayer.new()
+	layer.layer = 20
+	add_child(layer)
+	_connect_label = Label.new()
+	_connect_label.add_theme_font_override("font", load("res://UI/Share_Tech_Mono_Font/ShareTechMono-Regular.ttf"))
+	_connect_label.add_theme_font_size_override("font_size", 22)
+	_connect_label.add_theme_color_override("font_color", Color(0.953, 0.729, 0.184))
+	_connect_label.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.9))
+	_connect_label.add_theme_constant_override("outline_size", 6)
+	_connect_label.set_anchors_preset(Control.PRESET_CENTER)
+	_connect_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_connect_label.text = ""
+	layer.add_child(_connect_label)
+
+func _on_connecting(message: String) -> void:
+	if _connect_label:
+		_connect_label.text = message
+		_connect_label.visible = not message.is_empty()
 
 func _on_session_lost(_reason: String) -> void:
 	# Se cayó la conexión (o falló el join): volver al menú.
