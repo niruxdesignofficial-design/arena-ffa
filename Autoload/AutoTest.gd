@@ -64,6 +64,8 @@ func _ready() -> void:
 			_run_solo()
 		"offline":
 			_run_offline()
+		"botcam":
+			_run_botcam()
 		"overview":
 			_run_overview()
 		"server":
@@ -146,6 +148,32 @@ func _run_offline() -> void:
 			bot.display_name, moved, "OK" if moved > 0.5 else "FROZEN"])
 	else:
 		print("[AutoTest] OFFLINE: bot respawned (ok)")
+
+## Cámara mirando de cerca a un bot, para revisar la pose del arma / disparo.
+func _run_botcam() -> void:
+	await get_tree().create_timer(1.0).timeout
+	GameSettings.player_name = "CAM"
+	GameSettings.character_id = CharacterLib.default_id()
+	Net.host_offline()
+	Net.begin_infinite()
+	await get_tree().create_timer(2.5).timeout
+	var cam := Camera3D.new()
+	get_tree().current_scene.add_child(cam)
+	while true:
+		await get_tree().create_timer(0.1).timeout
+		var bot: NetPlayer = null
+		for p in get_tree().get_nodes_in_group("net_players"):
+			if (p as NetPlayer).is_bot and not (p as NetPlayer).is_dead:
+				bot = p
+				break
+		if bot == null:
+			continue
+		# De costado y cerca, a la altura del pecho: se ve bien el arma.
+		var side := bot.transform.basis.x
+		var fwd := -bot.transform.basis.z
+		cam.global_position = bot.global_position + side * 1.9 + fwd * 0.9 + Vector3(0, 1.2, 0)
+		cam.look_at(bot.global_position + Vector3(0, 1.05, 0))
+		cam.make_current()
 
 func _run_overview() -> void:
 	await get_tree().create_timer(1.2).timeout

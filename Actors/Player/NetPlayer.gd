@@ -64,6 +64,7 @@ var _weapons: NetWeapons
 var _rig: CharacterRig
 var _hand_prop: Node3D
 var _hand_meshes: Array[Node3D] = []
+var _aim_pose: AimPose
 var _auto_seed := 0.0
 var _bob_time := 0.0
 var _ads := false
@@ -189,6 +190,11 @@ func _attach_hand_prop() -> void:
 	if hand_idx == -1:
 		push_warning("[NetPlayer] El rig de '%s' no tiene hueso de mano; el arma en 3ra persona no se muestra." % character_id)
 		return
+	# Pose de apuntado (levanta el brazo + retroceso). Debe ir DESPUÉS del
+	# AnimationPlayer en el árbol para pisar la pose de la animación.
+	_aim_pose = AimPose.new()
+	skel.add_child(_aim_pose)
+	_aim_pose.setup(skel)
 	var attach := BoneAttachment3D.new()
 	attach.bone_name = skel.get_bone_name(hand_idx)
 	skel.add_child(attach)
@@ -208,8 +214,10 @@ func _attach_hand_prop() -> void:
 			(prop as MeshInstance3D).mesh = box
 		else:
 			prop = (load(String(def["model"])) as PackedScene).instantiate()
-			prop.scale = Vector3.ONE * float(def.get("scale", 1.0))
+			# Más grande en 3ra persona para que se vea claro el arma.
+			prop.scale = Vector3.ONE * float(def.get("scale", 1.0)) * 1.5
 			prop.rotation_degrees = Vector3(0, 90, 0)
+			prop.position = Vector3(0, 0.02, -0.06)
 		prop.visible = false
 		_hand_prop.add_child(prop)
 		_hand_meshes.append(prop)
@@ -910,6 +918,9 @@ func cl_fire_fx(windex: int, origin: Vector3, fx: Array) -> void:
 
 func _apply_fire_fx(windex: int, origin: Vector3, fx: Array) -> void:
 	radar_ping_at = _now()
+	# Retroceso del brazo del que dispara (visible en 3ra persona para todos).
+	if _aim_pose:
+		_aim_pose.kick()
 	# Sonido posicional + fogonazo en la mano del que dispara (si no sos vos).
 	if not is_local():
 		Sfx.play3d(String(WeaponDefs.get_def(windex)["sfx"]), origin, -4.0)

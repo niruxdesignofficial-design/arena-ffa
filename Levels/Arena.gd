@@ -63,48 +63,114 @@ func _ready() -> void:
 	if Net.is_session_server():
 		Net.players_changed.connect(_reconcile_players)
 	Net.session_closed.connect(_on_session_lost)
-	if not Net.dedicated:
+	if not Net.session_active() and not Net.pending_join.is_empty():
+		# Cliente entrando a un server remoto: pantalla de carga + conectar.
 		_build_connect_overlay()
 		Net.connecting_changed.connect(_on_connecting)
-	if not Net.session_active() and not Net.pending_join.is_empty():
-		# Cliente entrando a un server remoto: conectar recién ahora.
 		var addr := Net.pending_join
 		Net.pending_join = ""
 		var err := Net.join(addr)
 		if not err.is_empty():
-			Net.last_error = err
-			Transition.change_scene(Net.MENU_SCENE)
+			_fallback_offline()
 	else:
+		# Ya hay sesión (host local / práctica offline): arrancar directo.
 		Net.notify_arena_ready.call_deferred()
 
-# Cartel de conexión mientras el server (dormido en Render) despierta.
+# Pantalla de carga estilo juego real mientras conecta al server.
+var _connect_overlay: Control
 var _connect_label: Label
+var _connect_sub: Label
+var _offline_btn: Button
+var _connect_started_at := 0.0
 
 func _build_connect_overlay() -> void:
 	var layer := CanvasLayer.new()
 	layer.layer = 20
 	add_child(layer)
+	_connect_overlay = ColorRect.new()
+	_connect_overlay.color = Color(0.03, 0.035, 0.05, 1.0)
+	_connect_overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
+	layer.add_child(_connect_overlay)
+	var font := load("res://UI/Share_Tech_Mono_Font/ShareTechMono-Regular.ttf")
+	var title := Label.new()
+	title.add_theme_font_override("font", font)
+	title.add_theme_font_size_override("font_size", 46)
+	title.add_theme_color_override("font_color", Color(0.953, 0.729, 0.184))
+	title.text = "ARENA FFA"
+	title.set_anchors_preset(Control.PRESET_CENTER)
+	title.anchor_top = 0.34
+	title.anchor_bottom = 0.34
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_connect_overlay.add_child(title)
 	_connect_label = Label.new()
-	_connect_label.add_theme_font_override("font", load("res://UI/Share_Tech_Mono_Font/ShareTechMono-Regular.ttf"))
+	_connect_label.add_theme_font_override("font", font)
 	_connect_label.add_theme_font_size_override("font_size", 22)
-	_connect_label.add_theme_color_override("font_color", Color(0.953, 0.729, 0.184))
-	_connect_label.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.9))
-	_connect_label.add_theme_constant_override("outline_size", 6)
+	_connect_label.add_theme_color_override("font_color", Color.WHITE)
+	_connect_label.text = "CONNECTING TO SERVER..."
 	_connect_label.set_anchors_preset(Control.PRESET_CENTER)
 	_connect_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_connect_label.text = ""
-	layer.add_child(_connect_label)
+	_connect_overlay.add_child(_connect_label)
+	_connect_sub = Label.new()
+	_connect_sub.add_theme_font_override("font", font)
+	_connect_sub.add_theme_font_size_override("font_size", 15)
+	_connect_sub.add_theme_color_override("font_color", Color(1, 1, 1, 0.5))
+	_connect_sub.set_anchors_preset(Control.PRESET_CENTER)
+	_connect_sub.anchor_top = 0.56
+	_connect_sub.anchor_bottom = 0.56
+	_connect_sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_connect_overlay.add_child(_connect_sub)
+	_offline_btn = Button.new()
+	_offline_btn.add_theme_font_override("font", font)
+	_offline_btn.text = "▶  Play offline instead"
+	_offline_btn.set_anchors_preset(Control.PRESET_CENTER)
+	_offline_btn.anchor_top = 0.68
+	_offline_btn.anchor_bottom = 0.68
+	_offline_btn.offset_left = -150
+	_offline_btn.offset_right = 150
+	_offline_btn.visible = false
+	_offline_btn.pressed.connect(_fallback_offline)
+	_connect_overlay.add_child(_offline_btn)
+	_connect_started_at = Time.get_ticks_msec() / 1000.0
 
 func _on_connecting(message: String) -> void:
-	if _connect_label:
-		_connect_label.text = message
-		_connect_label.visible = not message.is_empty()
+	if _connect_overlay == null:
+		return
+	if message.is_empty():
+		# Conectó: mostrar pasos finales y ocultar la pantalla de carga.
+		_connect_label.text = "JOINING MATCH..."
+		_connect_sub.text = ""
+		_offline_btn.visible = false
+		var tw := create_tween()
+		tw.tween_interval(0.5)
+		tw.tween_property(_connect_overlay, "modulate:a", 0.0, 0.4)
+		tw.tween_callback(func():
+			if is_instance_valid(_connect_overlay):
+				_connect_overlay.visible = false)
+		return
+	_connect_label.text = message.to_upper()
+	# Tras unos segundos, ofrecer jugar offline (server dormido de Render).
+	var elapsed := Time.get_ticks_msec() / 1000.0 - _connect_started_at
+	if elapsed > 6.0:
+		_connect_sub.text = "The free server may be waking up (up to a minute)."
+		_offline_btn.visible = true
+
+var _fell_back := false
+
+func _fallback_offline() -> void:
+	# Jugar YA sin server: partida local con jugadores simulados.
+	if _fell_back:
+		return
+	_fell_back = true
+	Net.leave()
+	Net.host_offline()
+	Net.begin_infinite()
+	_on_connecting("") # ocultar la pantalla de carga
 
 func _on_session_lost(_reason: String) -> void:
-	# Se cayó la conexión (o falló el join): volver al menú.
+	# Si el server no respondió, en vez de volver al menú arrancamos offline
+	# para que SIEMPRE se pueda jugar.
 	if is_inside_tree() and not Net.session_active():
-		Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
-		Transition.change_scene(Net.MENU_SCENE)
+		_fallback_offline()
 
 func _physics_process(_delta: float) -> void:
 	if multiplayer.is_server():

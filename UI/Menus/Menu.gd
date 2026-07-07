@@ -257,15 +257,23 @@ func _build_main() -> Control:
 	char_row.add_child(next)
 	_refresh_char_label()
 
-	# Botón principal: jugar YA contra bots (local, instantáneo, sin server).
-	var play := _gold_button("▶  PLAY NOW  (vs bots)", 22)
-	play.pressed.connect(_play_offline)
+	# Botón principal: entrar al server real (partida en vivo; los amigos
+	# pueden caer en la MISMA sala). Con carga estilo juego real.
+	var play := _gold_button("▶  PLAY", 24)
+	play.pressed.connect(_join_community)
 	box.add_child(play)
 
-	# Online con amigos (server compartido de Render; puede tardar en despertar).
-	var online := _button("JOIN ONLINE MATCH  (play w/ friends)", 16)
-	online.pressed.connect(_join_community)
-	box.add_child(online)
+	# Estado del server (se ve "en vivo" como un juego real).
+	var status := _label(13, Color(0.4, 0.9, 0.5))
+	status.text = "●  LIVE SERVER  ·  drop into the ongoing match"
+	status.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	box.add_child(status)
+
+	# Práctica sin conexión (arranca al instante; para cuando el server no anda).
+	var practice := _button("Practice offline", 13)
+	practice.custom_minimum_size = Vector2(200, 30)
+	practice.pressed.connect(_play_offline)
+	box.add_child(practice)
 
 	var srv_row := HBoxContainer.new()
 	srv_row.alignment = BoxContainer.ALIGNMENT_CENTER
