@@ -8,12 +8,12 @@ enum Screen { MAIN, SETTINGS, RESULTS }
 
 const FONT_PATH := "res://UI/Share_Tech_Mono_Font/ShareTechMono-Regular.ttf"
 const WALLPAPER := "res://UI/Menus/wallpaper.png"
-const BUTTON_FRAME := "res://UI/Kenney/button_frame.png"
-const PANEL_FRAME := "res://UI/Kenney/panel_frame_ornate.png"
 const TWITTER_URL := "https://x.com/CZshooterbnb"
-const GOLD := Color(0.953, 0.729, 0.184)
-const BLUE := Color(0.235, 0.604, 0.831)
-const PANEL_BG := Color(0.05, 0.055, 0.07, 0.88)
+# Paleta neón moderna.
+const GOLD := Color(0.99, 0.78, 0.16)   # dorado neón (acento primario)
+const NEON := Color(0.16, 0.88, 1.0)    # cyan neón (acento secundario)
+const BLUE := Color(0.16, 0.88, 1.0)
+const GLASS := Color(0.03, 0.04, 0.06, 0.9) # vidrio oscuro de los paneles
 
 var _font: FontFile
 var _screens := {}
@@ -93,84 +93,94 @@ func _label(size: int, color := Color.WHITE) -> Label:
 	l.add_theme_color_override("font_color", color)
 	return l
 
+## Stylebox de botón neón: vidrio oscuro + borde fino que brilla. En hover
+## el borde y el glow se encienden.
+func _neon_box(accent: Color, glow: float, border_w: int, bg_a: float) -> StyleBoxFlat:
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(0.05, 0.07, 0.09, bg_a)
+	sb.border_color = accent
+	sb.set_border_width_all(border_w)
+	sb.set_corner_radius_all(6)
+	sb.set_content_margin_all(10)
+	sb.shadow_color = Color(accent.r, accent.g, accent.b, glow)
+	sb.shadow_size = 10 if glow > 0.01 else 0
+	sb.anti_aliasing = true
+	return sb
+
 func _button(text: String, size := 22) -> Button:
 	var b := Button.new()
 	b.text = text
 	b.add_theme_font_override("font", _font)
 	b.add_theme_font_size_override("font_size", size)
-	b.custom_minimum_size = Vector2(340, 48)
-	var normal := StyleBoxFlat.new()
-	normal.bg_color = Color(0.07, 0.08, 0.10, 0.92)
-	normal.border_color = Color(BLUE.r, BLUE.g, BLUE.b, 0.4)
-	normal.set_border_width_all(1)
-	normal.set_corner_radius_all(8)
-	normal.set_content_margin_all(10)
-	var hover: StyleBoxFlat = normal.duplicate()
-	hover.bg_color = Color(0.12, 0.15, 0.19, 0.95)
-	hover.border_color = BLUE
-	hover.set_border_width_all(2)
-	var pressed: StyleBoxFlat = normal.duplicate()
-	pressed.border_color = GOLD
-	pressed.set_border_width_all(2)
-	b.add_theme_stylebox_override("normal", normal)
-	b.add_theme_stylebox_override("hover", hover)
-	b.add_theme_stylebox_override("pressed", pressed)
-	b.add_theme_stylebox_override("focus", hover.duplicate())
+	b.custom_minimum_size = Vector2(340, 46)
+	b.add_theme_stylebox_override("normal", _neon_box(Color(NEON.r, NEON.g, NEON.b, 0.5), 0.0, 1, 0.55))
+	b.add_theme_stylebox_override("hover", _neon_box(NEON, 0.35, 2, 0.7))
+	b.add_theme_stylebox_override("pressed", _neon_box(GOLD, 0.4, 2, 0.75))
+	b.add_theme_stylebox_override("focus", _neon_box(Color(NEON.r, NEON.g, NEON.b, 0.5), 0.0, 1, 0.55))
+	b.add_theme_color_override("font_color", Color(0.85, 0.95, 1.0))
 	b.add_theme_color_override("font_hover_color", Color(1, 1, 1))
 	b.add_theme_color_override("font_pressed_color", GOLD)
 	b.pressed.connect(func(): Sfx.play("ui", -6.0))
-	# Marco ornamentado Kenney (borde dorado sobre el relleno oscuro).
-	_add_frame(b, GOLD)
 	return b
 
-## Superpone un marco 9-slice de Kenney (line-art tintado) sobre un control.
-func _add_frame(ctrl: Control, tint: Color, tex := BUTTON_FRAME, margin := 30) -> void:
-	var frame := NinePatchRect.new()
-	frame.texture = load(tex)
-	frame.patch_margin_left = margin
-	frame.patch_margin_right = margin
-	frame.patch_margin_top = margin
-	frame.patch_margin_bottom = margin
-	frame.set_anchors_preset(Control.PRESET_FULL_RECT)
-	frame.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	frame.modulate = tint
-	ctrl.add_child(frame)
-
+## Botón primario neón (PLAY): borde dorado grueso, glow fuerte, relleno ámbar.
 func _gold_button(text: String, size := 24) -> Button:
-	var b := _button(text, size)
-	var sb: StyleBoxFlat = b.get_theme_stylebox("normal").duplicate()
-	sb.bg_color = Color(0.32, 0.24, 0.05, 0.95)
-	sb.border_color = GOLD
-	sb.set_border_width_all(2)
-	b.add_theme_stylebox_override("normal", sb)
-	b.add_theme_color_override("font_color", Color(1, 0.9, 0.6))
+	var b := Button.new()
+	b.text = text
+	b.add_theme_font_override("font", _font)
+	b.add_theme_font_size_override("font_size", size)
+	b.custom_minimum_size = Vector2(340, 54)
+	var normal := _neon_box(GOLD, 0.35, 2, 0.7)
+	normal.bg_color = Color(0.22, 0.16, 0.03, 0.8)
+	var hover := _neon_box(GOLD, 0.6, 3, 0.85)
+	hover.bg_color = Color(0.32, 0.23, 0.05, 0.9)
+	b.add_theme_stylebox_override("normal", normal)
+	b.add_theme_stylebox_override("hover", hover)
+	b.add_theme_stylebox_override("pressed", hover.duplicate())
+	b.add_theme_stylebox_override("focus", normal.duplicate())
+	b.add_theme_color_override("font_color", Color(1, 0.92, 0.6))
+	b.add_theme_color_override("font_hover_color", Color(1, 1, 1))
+	b.pressed.connect(func(): Sfx.play("ui", -6.0))
 	return b
 
-func _panel_style(border := BLUE) -> StyleBoxFlat:
+func _panel_style(border := NEON) -> StyleBoxFlat:
 	var sb := StyleBoxFlat.new()
-	sb.bg_color = PANEL_BG
-	sb.border_color = Color(border.r, border.g, border.b, 0.0)
-	sb.set_corner_radius_all(10)
-	sb.set_content_margin_all(30)
-	sb.shadow_color = Color(0, 0, 0, 0.6)
-	sb.shadow_size = 22
+	sb.bg_color = GLASS
+	sb.border_color = Color(border.r, border.g, border.b, 0.55)
+	sb.set_border_width_all(1)
+	# Acento más grueso arriba (barra de color estilo HUD moderno).
+	sb.border_width_top = 3
+	sb.border_color = border
+	sb.set_corner_radius_all(12)
+	sb.set_content_margin_all(28)
+	sb.shadow_color = Color(border.r, border.g, border.b, 0.22)
+	sb.shadow_size = 16
+	sb.anti_aliasing = true
 	return sb
 
-## Panel con fondo oscuro + marco ornamentado dorado de Kenney encima.
-func _framed_panel(border := GOLD) -> PanelContainer:
+## Panel de vidrio con borde neón (ya no usa marcos Kenney).
+func _framed_panel(border := NEON) -> PanelContainer:
 	var p := PanelContainer.new()
 	p.add_theme_stylebox_override("panel", _panel_style(border))
-	var frame := NinePatchRect.new()
-	frame.texture = load(PANEL_FRAME)
-	frame.patch_margin_left = 34
-	frame.patch_margin_right = 34
-	frame.patch_margin_top = 34
-	frame.patch_margin_bottom = 34
-	frame.set_anchors_preset(Control.PRESET_FULL_RECT)
-	frame.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	frame.modulate = Color(border.r, border.g, border.b, 0.85)
-	p.add_child(frame)
 	return p
+
+## Aplica estilo neón a un LineEdit (campos de nombre / server).
+func _style_edit(e: LineEdit) -> void:
+	var box := StyleBoxFlat.new()
+	box.bg_color = Color(0.02, 0.03, 0.05, 0.7)
+	box.border_color = Color(NEON.r, NEON.g, NEON.b, 0.35)
+	box.set_border_width_all(1)
+	box.set_corner_radius_all(6)
+	box.set_content_margin_all(8)
+	var focus := box.duplicate()
+	focus.border_color = NEON
+	focus.set_border_width_all(2)
+	focus.shadow_color = Color(NEON.r, NEON.g, NEON.b, 0.3)
+	focus.shadow_size = 8
+	e.add_theme_stylebox_override("normal", box)
+	e.add_theme_stylebox_override("focus", focus)
+	e.add_theme_color_override("font_color", Color(0.9, 0.97, 1.0))
+	e.add_theme_color_override("caret_color", NEON)
 
 func _screen_root() -> Control:
 	var c := Control.new()
@@ -228,11 +238,27 @@ func _show_toast(text: String) -> void:
 func _build_main() -> Control:
 	var root := _screen_root()
 
+	# Glow neón detrás del título (varias copias tinte cyan desenfocadas).
+	for i in 3:
+		var glow := _label(84, Color(NEON.r, NEON.g, NEON.b, 0.20))
+		glow.text = "CZ SHOOTER"
+		glow.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		glow.set_anchors_preset(Control.PRESET_CENTER_TOP)
+		glow.anchor_left = 0.5
+		glow.anchor_right = 0.5
+		glow.offset_left = -400
+		glow.offset_right = 400
+		glow.offset_top = 40
+		glow.scale = Vector2.ONE * (1.0 + 0.012 * (i + 1))
+		glow.pivot_offset = Vector2(400, 50)
+		glow.add_theme_color_override("font_outline_color", Color(NEON.r, NEON.g, NEON.b, 0.15))
+		glow.add_theme_constant_override("outline_size", 10 + i * 8)
+		root.add_child(glow)
 	var title := _label(84, GOLD)
 	title.text = "CZ SHOOTER"
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	title.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.9))
-	title.add_theme_constant_override("outline_size", 14)
+	title.add_theme_color_override("font_outline_color", Color(0.5, 0.35, 0.05, 0.9))
+	title.add_theme_constant_override("outline_size", 6)
 	title.set_anchors_preset(Control.PRESET_CENTER_TOP)
 	title.anchor_left = 0.5
 	title.anchor_right = 0.5
@@ -298,6 +324,7 @@ func _build_main() -> Control:
 	_name_edit.alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_name_edit.add_theme_font_override("font", _font)
 	_name_edit.custom_minimum_size = Vector2(0, 38)
+	_style_edit(_name_edit)
 	box.add_child(_name_edit)
 
 	var char_row := HBoxContainer.new()
@@ -342,6 +369,7 @@ func _build_main() -> Control:
 	_server_edit.add_theme_font_override("font", _font)
 	_server_edit.add_theme_font_size_override("font_size", 12)
 	_server_edit.custom_minimum_size = Vector2(320, 30)
+	_style_edit(_server_edit)
 	srv_row.add_child(_server_edit)
 
 	var small_row := HBoxContainer.new()
