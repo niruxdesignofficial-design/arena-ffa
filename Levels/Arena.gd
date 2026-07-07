@@ -83,6 +83,8 @@ var _connect_sub: Label
 var _offline_btn: Button
 var _connect_started_at := 0.0
 
+const AUTO_OFFLINE_AFTER := 8.0 # si el server no conecta en 8s, jugar offline
+
 func _build_connect_overlay() -> void:
 	var layer := CanvasLayer.new()
 	layer.layer = 20
@@ -92,44 +94,40 @@ func _build_connect_overlay() -> void:
 	_connect_overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
 	layer.add_child(_connect_overlay)
 	var font := load("res://UI/Share_Tech_Mono_Font/ShareTechMono-Regular.ttf")
+	# Todo apilado y centrado con un VBox (sin pelear con anchors).
+	var vb := VBoxContainer.new()
+	vb.set_anchors_preset(Control.PRESET_FULL_RECT)
+	vb.alignment = BoxContainer.ALIGNMENT_CENTER
+	vb.add_theme_constant_override("separation", 22)
+	_connect_overlay.add_child(vb)
 	var title := Label.new()
 	title.add_theme_font_override("font", font)
-	title.add_theme_font_size_override("font_size", 46)
+	title.add_theme_font_size_override("font_size", 52)
 	title.add_theme_color_override("font_color", Color(0.953, 0.729, 0.184))
 	title.text = "ARENA FFA"
-	title.set_anchors_preset(Control.PRESET_CENTER)
-	title.anchor_top = 0.34
-	title.anchor_bottom = 0.34
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_connect_overlay.add_child(title)
+	vb.add_child(title)
 	_connect_label = Label.new()
 	_connect_label.add_theme_font_override("font", font)
 	_connect_label.add_theme_font_size_override("font_size", 22)
-	_connect_label.add_theme_color_override("font_color", Color.WHITE)
 	_connect_label.text = "CONNECTING TO SERVER..."
-	_connect_label.set_anchors_preset(Control.PRESET_CENTER)
 	_connect_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_connect_overlay.add_child(_connect_label)
+	vb.add_child(_connect_label)
 	_connect_sub = Label.new()
 	_connect_sub.add_theme_font_override("font", font)
 	_connect_sub.add_theme_font_size_override("font_size", 15)
 	_connect_sub.add_theme_color_override("font_color", Color(1, 1, 1, 0.5))
-	_connect_sub.set_anchors_preset(Control.PRESET_CENTER)
-	_connect_sub.anchor_top = 0.56
-	_connect_sub.anchor_bottom = 0.56
 	_connect_sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_connect_overlay.add_child(_connect_sub)
+	_connect_sub.text = ""
+	vb.add_child(_connect_sub)
 	_offline_btn = Button.new()
 	_offline_btn.add_theme_font_override("font", font)
-	_offline_btn.text = "▶  Play offline instead"
-	_offline_btn.set_anchors_preset(Control.PRESET_CENTER)
-	_offline_btn.anchor_top = 0.68
-	_offline_btn.anchor_bottom = 0.68
-	_offline_btn.offset_left = -150
-	_offline_btn.offset_right = 150
-	_offline_btn.visible = false
+	_offline_btn.add_theme_font_size_override("font_size", 20)
+	_offline_btn.text = "▶  PLAY NOW"
+	_offline_btn.custom_minimum_size = Vector2(280, 48)
+	_offline_btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	_offline_btn.pressed.connect(_fallback_offline)
-	_connect_overlay.add_child(_offline_btn)
+	vb.add_child(_offline_btn)
 	_connect_started_at = Time.get_ticks_msec() / 1000.0
 
 func _on_connecting(message: String) -> void:
@@ -147,12 +145,13 @@ func _on_connecting(message: String) -> void:
 			if is_instance_valid(_connect_overlay):
 				_connect_overlay.visible = false)
 		return
-	_connect_label.text = message.to_upper()
-	# Tras unos segundos, ofrecer jugar offline (server dormido de Render).
 	var elapsed := Time.get_ticks_msec() / 1000.0 - _connect_started_at
-	if elapsed > 6.0:
-		_connect_sub.text = "The free server may be waking up (up to a minute)."
-		_offline_btn.visible = true
+	# Si el server tarda (dormido en Render), caemos a jugar YA automáticamente.
+	if elapsed > AUTO_OFFLINE_AFTER:
+		_fallback_offline()
+		return
+	_connect_label.text = "LOADING MATCH..."
+	_connect_sub.text = "starting in %d..." % int(ceil(AUTO_OFFLINE_AFTER - elapsed))
 
 var _fell_back := false
 

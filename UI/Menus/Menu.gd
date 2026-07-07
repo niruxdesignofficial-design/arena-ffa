@@ -56,6 +56,23 @@ func _ready() -> void:
 		if Net.session_active():
 			Net.leave()
 		goto(Screen.MAIN)
+	# Keepalive: mientras alguien tenga el menú abierto, pinguea el server
+	# cada 4 min para que Render no lo duerma (así el PLAY conecta rápido).
+	if OS.has_feature("web"):
+		_ping_server()
+		var t := Timer.new()
+		t.wait_time = 240.0
+		t.autostart = true
+		t.timeout.connect(_ping_server)
+		add_child(t)
+
+func _ping_server() -> void:
+	if not OS.has_feature("web"):
+		return
+	var addr := _server_edit.text.strip_edges() if _server_edit else GameSettings.last_server
+	if addr.is_empty() or addr.begins_with("127.") or addr == "localhost":
+		return
+	JavaScriptBridge.eval("fetch('https://%s', {mode:'no-cors'}).catch(()=>{});" % addr, true)
 
 func goto(screen: int) -> void:
 	_current = screen
