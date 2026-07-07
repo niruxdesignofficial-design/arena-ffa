@@ -142,6 +142,17 @@ func _build() -> void:
 	root.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(root)
 
+	# Link a X / Twitter, arriba a la derecha (clickeable).
+	var x_btn := Button.new()
+	x_btn.add_theme_font_override("font", _font)
+	x_btn.add_theme_font_size_override("font_size", 13)
+	x_btn.flat = true
+	x_btn.add_theme_color_override("font_color", Color(0.7, 0.85, 1.0, 0.8))
+	x_btn.text = "X · @CZshooterbnb"
+	x_btn.position = Vector2(16, 66)
+	x_btn.pressed.connect(func(): OS.shell_open("https://x.com/CZshooterbnb"))
+	root.add_child(x_btn)
+
 	# Viñeta roja permanente cuando la vida está baja.
 	_vignette = ColorRect.new()
 	_vignette.color = Color(0.7, 0.0, 0.0, 0.0)

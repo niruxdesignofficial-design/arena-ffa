@@ -104,7 +104,7 @@ func _build_connect_overlay() -> void:
 	title.add_theme_font_override("font", font)
 	title.add_theme_font_size_override("font_size", 52)
 	title.add_theme_color_override("font_color", Color(0.953, 0.729, 0.184))
-	title.text = "ARENA FFA"
+	title.text = "CZ SHOOTER"
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	vb.add_child(title)
 	_connect_label = Label.new()
@@ -128,6 +128,16 @@ func _build_connect_overlay() -> void:
 	_offline_btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	_offline_btn.pressed.connect(_fallback_offline)
 	vb.add_child(_offline_btn)
+	# Link a X / Twitter en la pantalla de carga.
+	var x_btn := Button.new()
+	x_btn.add_theme_font_override("font", font)
+	x_btn.add_theme_font_size_override("font_size", 15)
+	x_btn.flat = true
+	x_btn.add_theme_color_override("font_color", Color(0.6, 0.8, 1.0))
+	x_btn.text = "X · @CZshooterbnb"
+	x_btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	x_btn.pressed.connect(func(): OS.shell_open("https://x.com/CZshooterbnb"))
+	vb.add_child(x_btn)
 	_connect_started_at = Time.get_ticks_msec() / 1000.0
 
 func _on_connecting(message: String) -> void:

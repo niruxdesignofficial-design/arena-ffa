@@ -8,6 +8,7 @@ enum Screen { MAIN, SETTINGS, RESULTS }
 
 const FONT_PATH := "res://UI/Share_Tech_Mono_Font/ShareTechMono-Regular.ttf"
 const WALLPAPER := "res://UI/Menus/wallpaper.png"
+const TWITTER_URL := "https://x.com/CZshooterbnb"
 const GOLD := Color(0.953, 0.729, 0.184)
 const BLUE := Color(0.235, 0.604, 0.831)
 const PANEL_BG := Color(0.05, 0.055, 0.07, 0.88)
@@ -196,7 +197,7 @@ func _build_main() -> Control:
 	var root := _screen_root()
 
 	var title := _label(84, GOLD)
-	title.text = "ARENA FFA"
+	title.text = "CZ SHOOTER"
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	title.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.9))
 	title.add_theme_constant_override("outline_size", 14)
@@ -219,6 +220,18 @@ func _build_main() -> Control:
 	subtitle.offset_right = 400
 	subtitle.offset_top = 138
 	root.add_child(subtitle)
+
+	# Link a X / Twitter (clickeable, abre en pestaña nueva en web).
+	var x_btn := _button("X  ·  Follow @CZshooterbnb", 16)
+	x_btn.custom_minimum_size = Vector2(320, 38)
+	x_btn.set_anchors_preset(Control.PRESET_CENTER_TOP)
+	x_btn.anchor_left = 0.5
+	x_btn.anchor_right = 0.5
+	x_btn.offset_left = -160
+	x_btn.offset_right = 160
+	x_btn.offset_top = 174
+	x_btn.pressed.connect(func(): OS.shell_open(TWITTER_URL))
+	root.add_child(x_btn)
 
 	var panel := PanelContainer.new()
 	panel.add_theme_stylebox_override("panel", _panel_style())
