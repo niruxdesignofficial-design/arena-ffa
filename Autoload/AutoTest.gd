@@ -62,6 +62,8 @@ func _ready() -> void:
 		"solo":
 			autopilot = true
 			_run_solo()
+		"offline":
+			_run_offline()
 		"overview":
 			_run_overview()
 		"server":
@@ -116,6 +118,34 @@ func _run_solo() -> void:
 		Net._srv_do_add_bot()
 	await get_tree().create_timer(0.5).timeout
 	Net.start_match()
+
+## Igual que el botón "PLAY NOW (vs bots)" del menú: OfflineMultiplayerPeer.
+func _run_offline() -> void:
+	await get_tree().create_timer(1.0).timeout
+	GameSettings.player_name = "OFFLINE-TESTER"
+	GameSettings.character_id = CharacterLib.default_id()
+	Net.host_offline()
+	Net.begin_infinite()
+	# Verificar que los bots aparecen y se mueven en modo offline.
+	await get_tree().create_timer(6.0).timeout
+	var players := get_tree().get_nodes_in_group("net_players")
+	print("[AutoTest] OFFLINE: %d players spawned" % players.size())
+	var bot: NetPlayer = null
+	for p in players:
+		if (p as NetPlayer).is_bot:
+			bot = p
+			break
+	if bot == null:
+		print("[AutoTest] OFFLINE: NO BOTS!")
+		return
+	var p1: Vector3 = bot.global_position
+	await get_tree().create_timer(3.0).timeout
+	if is_instance_valid(bot):
+		var moved := bot.global_position.distance_to(p1)
+		print("[AutoTest] OFFLINE bot '%s' moved %.2f m (%s)" % [
+			bot.display_name, moved, "OK" if moved > 0.5 else "FROZEN"])
+	else:
+		print("[AutoTest] OFFLINE: bot respawned (ok)")
 
 func _run_overview() -> void:
 	await get_tree().create_timer(1.2).timeout

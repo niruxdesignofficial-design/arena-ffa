@@ -38,6 +38,7 @@ var last_results := {}
 # Servidor dedicado (headless, sin jugador propio) y líder de sala (quien
 # puede arrancar la partida / revancha cuando el server es dedicado).
 var dedicated := false
+var offline := false # partida local solo-bots (sin red, arranca al instante)
 var leader_id := 1
 
 const COUNTDOWN_SECONDS := 3.0
@@ -118,11 +119,23 @@ func cl_pong(t: int) -> void:
 # SESIÓN
 
 func session_active() -> bool:
-	return multiplayer.multiplayer_peer != null \
-		and multiplayer.multiplayer_peer is WebSocketMultiplayerPeer
+	var p := multiplayer.multiplayer_peer
+	return p != null and (p is WebSocketMultiplayerPeer or p is OfflineMultiplayerPeer)
 
 func is_session_server() -> bool:
 	return session_active() and multiplayer.is_server()
+
+## Partida OFFLINE (solo bots, sin red): arranca al instante y funciona en
+## el navegador (no necesita despertar ningún server). Ideal para jugar ya.
+func host_offline() -> String:
+	multiplayer.multiplayer_peer = OfflineMultiplayerPeer.new()
+	dedicated = false
+	offline = true
+	leader_id = 1
+	players = {1: _me_entry()}
+	in_match = false
+	players_changed.emit()
+	return ""
 
 func my_id() -> int:
 	return multiplayer.get_unique_id() if session_active() else 0
@@ -222,9 +235,11 @@ func _watch_connect() -> void:
 
 func leave() -> void:
 	_stop_discovery()
-	if session_active():
+	_awaiting_connect = false
+	if multiplayer.multiplayer_peer != null:
 		multiplayer.multiplayer_peer.close()
 	multiplayer.multiplayer_peer = null
+	offline = false
 	players = {}
 	in_match = false
 	players_changed.emit()

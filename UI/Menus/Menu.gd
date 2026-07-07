@@ -257,9 +257,15 @@ func _build_main() -> Control:
 	char_row.add_child(next)
 	_refresh_char_label()
 
-	var join := _gold_button("JOIN COMMUNITY MATCH", 22)
-	join.pressed.connect(_join_community)
-	box.add_child(join)
+	# Botón principal: jugar YA contra bots (local, instantáneo, sin server).
+	var play := _gold_button("▶  PLAY NOW  (vs bots)", 22)
+	play.pressed.connect(_play_offline)
+	box.add_child(play)
+
+	# Online con amigos (server compartido de Render; puede tardar en despertar).
+	var online := _button("JOIN ONLINE MATCH  (play w/ friends)", 16)
+	online.pressed.connect(_join_community)
+	box.add_child(online)
 
 	var srv_row := HBoxContainer.new()
 	srv_row.alignment = BoxContainer.ALIGNMENT_CENTER
@@ -365,14 +371,23 @@ func _play_as_guest() -> void:
 		_name_edit.text = "Guest_%d" % (randi() % 900 + 100)
 	_show_toast("Playing as guest.")
 
-## Entrar a la partida comunitaria (una sola, infinita, siempre poblada).
-func _join_community() -> void:
+func _save_identity() -> void:
 	GameSettings.player_name = _name_edit.text.strip_edges()
 	if GameSettings.player_name.is_empty():
 		GameSettings.player_name = "Guest_%d" % (randi() % 900 + 100)
 	if not _char_ids.is_empty():
 		GameSettings.character_id = _char_ids[_char_index]
 	GameSettings.save_settings()
+
+## Jugar YA: partida local contra bots, arranca al instante (sin server).
+func _play_offline() -> void:
+	_save_identity()
+	Net.host_offline()
+	Net.begin_infinite()
+
+## Online con amigos: conecta al server compartido (puede tardar en despertar).
+func _join_community() -> void:
+	_save_identity()
 	_join_flow(_server_edit.text)
 
 func _on_host_pressed() -> void:
