@@ -21,6 +21,9 @@ signal hall_changed
 # El server real (online) ya está despierto y acepta conexiones WebSocket.
 # Lo emite el "probe" que corre mientras jugás la partida de calentamiento.
 signal server_ready
+# Se cerró un ciclo del podio: llega el número de ciclo y el podio final
+# (top elegible con nombre/kills) para mostrar el resultado antes del reset.
+signal cycle_closed(cycle_number: int, podium: Array)
 
 const PORT := 8910
 const DISCOVERY_PORT := 8911
@@ -50,14 +53,22 @@ const BOT_NAMES: Array[String] = [
 	"Shadow23", "xKiraa", "NoScope_L", "Ferchu", "Dark_YT", "TrigZ",
 	"pau.exe", "KevinAR", "Lautaro7", "M4ti", "juampi", "Sofi_k",
 ]
-const INFINITE_ROUND_SECONDS := 1800 # el dashboard se resetea cada 30 min
 const MAX_BOTS := 2 # solo 1-2 bots de relleno; se van cuando entra gente
 const MIN_LIVELY := 3 # total (humanos+bots) al que apuntamos con pocos jugadores
 const HISTORY_PATH := "user://match_history.json"
+# PODIO POR CICLOS: cada N minutos se cierra el podio, se archiva un snapshot
+# inmutable de los ganadores (con wallet) y se reinicia. Configurable por env
+# (CYCLE_MINUTES, SNAPSHOT_TOP_N) para ajustar sin tocar código.
+const DEFAULT_CYCLE_MINUTES := 25
+const DEFAULT_SNAPSHOT_TOP_N := 10
+const SNAPSHOTS_PATH := "user://snapshots.json" # backup local append-only
 
-# Partida única infinita (server dedicado): nunca termina; cada 30 min se
-# guarda el resultado en disco y el scoreboard arranca de cero.
+# Partida única infinita (server dedicado): nunca termina; cada ciclo (25 min
+# por defecto) se archiva el snapshot de ganadores y el podio arranca de cero.
 var infinite := false
+# Ciclo de podio actual (número incremental) y cuándo arrancó (unix).
+var cycle_number := 1
+var cycle_started_unix := 0
 # Dirección a la que conectarse una vez cargada la Arena (drop-in flow).
 var pending_join := ""
 # Entrada instantánea: al tocar PLAY se juega YA una partida local (bots)
@@ -477,8 +488,20 @@ func srv_register(pname: String, character: String, wallet := "") -> void:
 		cl_start_match.rpc_id(id)
 
 func _broadcast_players() -> void:
-	cl_sync_players.rpc(players, leader_id)
+	cl_sync_players.rpc(_public_players(), leader_id)
 	players_changed.emit()
+
+## Réplica pública para los clientes: reemplaza la wallet por un booleano
+## "eligible" (no exponemos las direcciones al resto de jugadores). El server
+## conserva las wallets reales en `players` para el snapshot/pago.
+func _public_players() -> Dictionary:
+	var out := {}
+	for id in players:
+		var pl: Dictionary = players[id].duplicate()
+		pl["eligible"] = not String(pl.get("wallet", "")).is_empty()
+		pl.erase("wallet")
+		out[id] = pl
+	return out
 
 @rpc("authority", "reliable")
 func cl_sync_players(replica: Dictionary, leader: int) -> void:
@@ -596,29 +619,95 @@ func begin_infinite() -> void:
 	if not is_session_server():
 		return
 	infinite = true
-	round_seconds_total = INFINITE_ROUND_SECONDS if round_seconds_total == 300 else round_seconds_total
+	# Duración del ciclo: env CYCLE_MINUTES (default 25). Si AutoTest ya puso un
+	# valor de prueba (distinto del default 300), se respeta.
+	round_seconds_total = cycle_seconds() if round_seconds_total == 300 else round_seconds_total
+	cycle_number = 1
+	cycle_started_unix = int(Time.get_unix_time_from_system())
 	_load_hall()
 	_balance_bots()
 	_broadcast_players()
 	start_match()
-	print("[Net] Infinite match started; dashboard resets every %d s" % round_seconds_total)
+	print("[Net] Podium cycle started: %d s/cycle, top %d snapshot" % [round_seconds_total, snapshot_top_n()])
 
-## Fin de ciclo en modo infinito: guarda el resultado y arranca de cero
-## sin echar a nadie de la partida.
-func _soft_reset_round() -> void:
+## Duración del ciclo en segundos (env CYCLE_MINUTES, default 25).
+func cycle_seconds() -> int:
+	var e := OS.get_environment("CYCLE_MINUTES")
+	var mins := int(e) if e.is_valid_int() and int(e) > 0 else DEFAULT_CYCLE_MINUTES
+	return mins * 60
+
+## Cuántos ganadores entran al snapshot (env SNAPSHOT_TOP_N, default 10).
+func snapshot_top_n() -> int:
+	var e := OS.get_environment("SNAPSHOT_TOP_N")
+	return int(e) if e.is_valid_int() and int(e) > 0 else DEFAULT_SNAPSHOT_TOP_N
+
+## Ranking FINAL ELEGIBLE del ciclo: solo jugadores reales (id>0) con wallet
+## EVM conectada, ordenados por kills y desempate por puntaje. Es lo único que
+## entra al snapshot de pago (los invitados sin wallet juegan pero no cobran).
+func eligible_ranking() -> Array:
+	var ids := players.keys().filter(func(k):
+		return int(k) > 0 and not String(players[k].get("wallet", "")).is_empty())
+	ids.sort_custom(func(a, b):
+		var pa: Dictionary = players[a]
+		var pb: Dictionary = players[b]
+		if int(pa["kills"]) != int(pb["kills"]):
+			return int(pa["kills"]) > int(pb["kills"])
+		return int(pa.get("score", 0)) > int(pb.get("score", 0)))
+	return ids
+
+## Arma el snapshot inmutable del ciclo: top-N elegible con rank/wallet/kills/
+## points + cycleId y timestamp. Formato JSON listo para repartir fees.
+func _build_snapshot() -> Dictionary:
+	var winners := []
+	var rank := 0
+	for id in eligible_ranking().slice(0, snapshot_top_n()):
+		rank += 1
+		var pl: Dictionary = players[id]
+		winners.append({
+			"rank": rank,
+			"wallet": String(pl["wallet"]),
+			"name": String(pl["name"]),
+			"kills": int(pl["kills"]),
+			"points": int(pl.get("score", 0)),
+		})
+	var now := int(Time.get_unix_time_from_system())
+	return {
+		"cycleId": "cycle-%04d" % cycle_number,
+		"cycleNumber": cycle_number,
+		"closedAtUnix": now,
+		"closedAt": Time.get_datetime_string_from_system(true),
+		"cycleSeconds": round_seconds_total,
+		"eligibleCount": eligible_ranking().size(),
+		"winners": winners,
+	}
+
+## CIERRE DE CICLO (server-authoritative). Orden estricto pedido por el spec:
+## 1) tomar ranking real  2) armar snapshot  3) ARCHIVAR (backup) ANTES de
+## tocar nada  4) recién ahí resetear el podio a cero.
+func _close_cycle() -> void:
+	# (2) snapshot con el ranking REAL del server (nunca del cliente).
+	var snap := _build_snapshot()
+	# (3) archivar inmutable ANTES del reset: disco local + webhook (durable).
+	_archive_snapshot(snap)
+	# Historial "clásico" por nombre + push de kills nuevos por wallet.
 	var winner: int = top_player_id()
 	var winner_name: String = String(players.get(winner, {}).get("name", "?"))
 	var winner_kills: int = int(players.get(winner, {}).get("kills", 0))
 	_save_history(winner_name)
-	# Antes de poner los kills en cero, empujar lo que falte a la planilla y
-	# resetear el baseline (los kills del próximo ciclo se suman igual).
 	push_scores()
 	_score_pushed.clear()
+	# Podio para mostrar en el dashboard (top-3 elegible con nombre/kills).
+	var podium: Array = snap["winners"].slice(0, 3)
+	cl_cycle_closed.rpc(cycle_number, podium)
+	cycle_closed.emit(cycle_number, podium)
+	# (4) RESET del podio a cero (los snapshots archivados NO se tocan).
 	for id in players:
 		players[id]["kills"] = 0
 		players[id]["deaths"] = 0
 		players[id]["streak"] = 0
 		players[id]["score"] = 0
+	cycle_number += 1
+	cycle_started_unix = int(Time.get_unix_time_from_system())
 	round_seconds_left = round_seconds_total
 	_broadcast_players()
 	cl_round_reset.rpc(winner_name, winner_kills)
@@ -627,7 +716,39 @@ func _soft_reset_round() -> void:
 	hall_changed.emit()
 	for id in players.keys().filter(func(k): return int(k) < 0):
 		_bot_chat(id, BOT_CHAT_RESET, 0.3)
-	print("[Net] Dashboard reset; last winner: %s (%d kills)" % [winner_name, winner_kills])
+	print("[Net] Cycle %s closed (%d winners archived); podium reset. Next cycle %d." % [
+		snap["cycleId"], snap["winners"].size(), cycle_number])
+
+## Archiva el snapshot de forma INMUTABLE y APPEND-ONLY: nunca sobrescribe.
+## Backup local en disco + envío al webhook (Google Sheet) que es la fuente de
+## verdad durable (sobrevive a los reinicios de Render).
+func _archive_snapshot(snap: Dictionary) -> void:
+	# Backup local (append-only).
+	var arr := []
+	if FileAccess.file_exists(SNAPSHOTS_PATH):
+		var parsed = JSON.parse_string(FileAccess.get_file_as_string(SNAPSHOTS_PATH))
+		if typeof(parsed) == TYPE_ARRAY:
+			arr = parsed
+	arr.append(snap)
+	while arr.size() > 500:
+		arr.pop_front()
+	var f := FileAccess.open(SNAPSHOTS_PATH, FileAccess.WRITE)
+	if f:
+		f.store_string(JSON.stringify(arr, "\t"))
+		f.close()
+	# Envío durable al webhook (si está configurado).
+	var url := _webhook_url()
+	if url.is_empty():
+		return
+	var http := HTTPRequest.new()
+	add_child(http)
+	http.request_completed.connect(func(_r, code, _h, _b):
+		http.queue_free()
+		if code < 200 or code >= 300:
+			push_warning("[Net] snapshot push HTTP %d" % code))
+	var body := JSON.stringify({"secret": _webhook_secret(), "type": "snapshot", "snapshot": snap})
+	if http.request(url, ["Content-Type: application/json"], HTTPClient.METHOD_POST, body) != OK:
+		http.queue_free()
 
 ## Carga el top histórico desde el archivo al arrancar el server.
 func _load_hall() -> void:
@@ -650,6 +771,11 @@ func cl_streak(title: String) -> void:
 @rpc("authority", "reliable")
 func cl_round_reset(winner_name: String, winner_kills: int) -> void:
 	round_reset.emit(winner_name, winner_kills)
+
+## El server avisa el cierre del ciclo con el podio final para el dashboard.
+@rpc("authority", "reliable")
+func cl_cycle_closed(n: int, podium: Array) -> void:
+	cycle_closed.emit(n, podium)
 
 @rpc("authority", "reliable")
 func cl_hall(top: Array) -> void:
@@ -877,7 +1003,7 @@ func _tick_round(delta: float) -> void:
 	round_time_changed.emit(round_seconds_left)
 	if round_seconds_left <= 0:
 		if infinite:
-			_soft_reset_round()
+			_close_cycle()
 		else:
 			end_round()
 
