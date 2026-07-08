@@ -9,13 +9,17 @@ services:
     runtime: docker
     plan: free
     autoDeploy: true
-    # Ranking global por wallet (para repartir fees): el server manda los kills
-    # nuevos a una planilla de Google. Se cargan en el dashboard de Render
-    # (Environment), NO en el repo, porque son secretos.
+    # Ranking global + snapshots de podio (para repartir fees). El server manda
+    # los datos a nuestro panel admin (POST /ingest). Se cargan en el dashboard
+    # de Render (Environment), NO en el repo, porque son secretos.
     envVars:
-      - key: SCORE_WEBHOOK_URL   # URL del Web App de Google Apps Script
+      - key: SCORE_WEBHOOK_URL   # URL /ingest del panel admin (arena-ffa-admin)
         sync: false
-      - key: SCORE_SECRET        # clave compartida con el script (anti-spam)
+      - key: SCORE_SECRET        # == INGEST_SECRET del panel
+        sync: false
+      - key: CYCLE_MINUTES       # (opcional) duración del ciclo de podio; default 25
+        sync: false
+      - key: SNAPSHOT_TOP_N      # (opcional) ganadores por snapshot; default 10
         sync: false
 
   - type: web
@@ -24,3 +28,22 @@ services:
     buildCommand: ""
     staticPublishPath: build/web
     autoDeploy: true
+
+  # Panel admin (Node): recibe los datos del juego, los guarda en Postgres (Neon)
+  # y los muestra con la marca CZ Shooter (snapshots + ranking + export CSV).
+  - type: web
+    name: arena-ffa-admin
+    runtime: node
+    rootDir: admin
+    plan: free
+    autoDeploy: true
+    buildCommand: npm install
+    startCommand: node server.js
+    healthCheckPath: /health
+    envVars:
+      - key: DATABASE_URL    # connection string de Neon (Postgres)
+        sync: false
+      - key: INGEST_SECRET   # == SCORE_SECRET del server del juego
+        sync: false
+      - key: ADMIN_PASSWORD  # contraseña para entrar al panel
+        sync: false
