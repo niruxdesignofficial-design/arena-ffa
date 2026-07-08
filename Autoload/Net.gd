@@ -92,6 +92,13 @@ var _chat_last_at := {}
 
 var _discovery := PacketPeerUDP.new()
 var _discovery_active := false
+# Ranking global permanente (para repartir fees): el server manda a una
+# planilla de Google, por WALLET, los kills nuevos de cada jugador. La planilla
+# es la fuente de verdad (sobrevive a los reinicios de Render). _score_pushed
+# guarda cuántos kills de cada id ya mandamos, para no duplicar.
+var _score_pushed := {}
+var _score_accum := 0.0
+const SCORE_PUSH_EVERY := 120.0
 var _round_accum := 0.0
 var _arena_ready_peers := {}
 
@@ -110,6 +117,62 @@ func _process(delta: float) -> void:
 	_tick_round(delta)
 	_tick_ping(delta)
 	_poll_probe()
+	# Cada tanto, el server empuja los kills nuevos (por wallet) a la planilla.
+	if is_session_server() and infinite and not _webhook_url().is_empty():
+		_score_accum += delta
+		if _score_accum >= SCORE_PUSH_EVERY:
+			_score_accum = 0.0
+			push_scores()
+
+# RANKING GLOBAL POR WALLET (para repartir fees)
+# Manda a un webhook (Google Apps Script) los kills NUEVOS de cada wallet real
+# desde el último envío. La planilla los SUMA a un total permanente por wallet.
+
+func _webhook_url() -> String:
+	return OS.get_environment("SCORE_WEBHOOK_URL")
+
+func _webhook_secret() -> String:
+	return OS.get_environment("SCORE_SECRET")
+
+## Empuja los deltas de kills por wallet a la planilla. Solo server, infinito,
+## y solo jugadores reales (id > 0) con wallet EVM válida.
+func push_scores() -> void:
+	if not (is_session_server() and infinite):
+		return
+	var url := _webhook_url()
+	if url.is_empty():
+		return
+	var batch := []
+	var new_pushed := {}
+	for id in players:
+		if int(id) <= 0:
+			continue # bots no cuentan
+		var pl: Dictionary = players[id]
+		var w := String(pl.get("wallet", ""))
+		if w.is_empty():
+			continue # invitados sin wallet: no se pueden pagar
+		var kills := int(pl.get("kills", 0))
+		var delta := kills - int(_score_pushed.get(id, 0))
+		if delta <= 0:
+			continue
+		batch.append({"wallet": w, "name": String(pl.get("name", "")), "kills": delta})
+		new_pushed[id] = kills
+	if batch.is_empty():
+		return
+	var http := HTTPRequest.new()
+	add_child(http)
+	http.request_completed.connect(func(_r, code, _h, _b):
+		http.queue_free()
+		if code < 200 or code >= 300:
+			push_warning("[Net] score push HTTP %d" % code))
+	var body := JSON.stringify({"secret": _webhook_secret(), "players": batch})
+	var err := http.request(url, ["Content-Type: application/json"], HTTPClient.METHOD_POST, body)
+	if err != OK:
+		http.queue_free()
+		return
+	# Envío arrancó OK: recién ahí marcamos como enviado (evita doble conteo).
+	for id in new_pushed:
+		_score_pushed[id] = new_pushed[id]
 
 # PROBE DE DISPONIBILIDAD DEL SERVER (para la entrada instantánea)
 # Mientras jugás la partida de calentamiento (local), un WebSocket crudo
@@ -312,7 +375,19 @@ func _me_entry() -> Dictionary:
 		"name": GameSettings.player_name,
 		"character": GameSettings.character_id if not GameSettings.character_id.is_empty() else CharacterLib.default_id(),
 		"kills": 0, "deaths": 0, "streak": 0, "score": 0,
+		"wallet": _valid_evm(GameSettings.wallet),
 	}
+
+## Devuelve la wallet si es una dirección EVM válida (0x + 40 hex), o "".
+## Es la clave para el ranking global / reparto de fees (nombres no sirven).
+func _valid_evm(w: String) -> String:
+	w = w.strip_edges()
+	if w.length() != 42 or not w.begins_with("0x"):
+		return ""
+	for c in w.substr(2):
+		if not c.is_valid_hex_number():
+			return ""
+	return w.to_lower()
 
 # CALLBACKS DE CONEXIÓN
 
@@ -327,7 +402,10 @@ func _on_peer_disconnected(id: int) -> void:
 			var leave_feed := "%s left the match" % players[id]["name"]
 			cl_kill_feed.rpc(leave_feed)
 			kill_feed.emit(leave_feed)
+			# Guardar sus kills nuevos en la planilla antes de que se vaya.
+			push_scores()
 		players.erase(id)
+		_score_pushed.erase(id)
 		_arena_ready_peers.erase(id)
 		if dedicated and leader_id == id:
 			# Nuevo líder: el humano (id positivo) más antiguo; nunca un bot.
@@ -341,7 +419,8 @@ func _on_connected_to_server() -> void:
 	_awaiting_connect = false
 	connecting_changed.emit("")
 	srv_register.rpc_id(1, GameSettings.player_name,
-		GameSettings.character_id if not GameSettings.character_id.is_empty() else CharacterLib.default_id())
+		GameSettings.character_id if not GameSettings.character_id.is_empty() else CharacterLib.default_id(),
+		_valid_evm(GameSettings.wallet))
 
 func _on_connection_failed() -> void:
 	# El server dormido de Render rechaza el primer intento mientras arranca.
@@ -370,7 +449,7 @@ func _on_server_disconnected() -> void:
 # REGISTRO Y RÉPLICA DE JUGADORES (server-authoritative)
 
 @rpc("any_peer", "reliable")
-func srv_register(pname: String, character: String) -> void:
+func srv_register(pname: String, character: String, wallet := "") -> void:
 	if not multiplayer.is_server():
 		return
 	var id := multiplayer.get_remote_sender_id()
@@ -381,6 +460,7 @@ func srv_register(pname: String, character: String) -> void:
 		"name": pname.strip_edges().substr(0, 18) if not pname.strip_edges().is_empty() else "Player %d" % id,
 		"character": character,
 		"kills": 0, "deaths": 0, "streak": 0, "score": 0,
+		"wallet": _valid_evm(wallet),
 	}
 	if dedicated and (leader_id == 0 or not players.has(leader_id)):
 		leader_id = id
@@ -530,6 +610,10 @@ func _soft_reset_round() -> void:
 	var winner_name: String = String(players.get(winner, {}).get("name", "?"))
 	var winner_kills: int = int(players.get(winner, {}).get("kills", 0))
 	_save_history(winner_name)
+	# Antes de poner los kills en cero, empujar lo que falte a la planilla y
+	# resetear el baseline (los kills del próximo ciclo se suman igual).
+	push_scores()
+	_score_pushed.clear()
 	for id in players:
 		players[id]["kills"] = 0
 		players[id]["deaths"] = 0

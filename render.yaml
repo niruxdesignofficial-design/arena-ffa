@@ -9,6 +9,14 @@ services:
     runtime: docker
     plan: free
     autoDeploy: true
+    # Ranking global por wallet (para repartir fees): el server manda los kills
+    # nuevos a una planilla de Google. Se cargan en el dashboard de Render
+    # (Environment), NO en el repo, porque son secretos.
+    envVars:
+      - key: SCORE_WEBHOOK_URL   # URL del Web App de Google Apps Script
+        sync: false
+      - key: SCORE_SECRET        # clave compartida con el script (anti-spam)
+        sync: false
 
   - type: web
     name: arena-ffa-web

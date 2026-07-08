@@ -401,21 +401,26 @@ func _shift_character(dir: int) -> void:
 	_char_index = wrapi(_char_index + dir, 0, _char_ids.size())
 	_refresh_char_label()
 
-## Identidad wallet (Phantom u otra wallet Solana inyectada; solo web).
-## Sin lógica on-chain: se usa como identidad/nombre.
+## Identidad wallet EVM (MetaMask u otra wallet inyectada; solo web).
+## La dirección 0x... se usa como identidad y como clave del ranking global
+## por wallet (para repartir fees). Sin firmar transacciones ni lógica on-chain.
 func _connect_wallet() -> void:
 	if not OS.has_feature("web"):
 		_show_toast("Wallet connect works in the browser version.")
 		return
 	_wallet_btn.text = "CONNECTING..."
+	# MetaMask / EVM: pedimos la cuenta (0x...) que se usa como identidad y
+	# para repartir fees en BNB Chain. Mejor esfuerzo: cambiar a BNB (0x38).
 	JavaScriptBridge.eval("""
 		window._wallet_result = '';
 		(async () => {
 			try {
-				const provider = window.solana || (window.phantom && window.phantom.solana);
-				if (!provider) { window._wallet_result = 'ERR:no_wallet'; return; }
-				const resp = await provider.connect();
-				window._wallet_result = resp.publicKey.toString();
+				const eth = window.ethereum;
+				if (!eth) { window._wallet_result = 'ERR:no_wallet'; return; }
+				const accounts = await eth.request({ method: 'eth_requestAccounts' });
+				if (!accounts || !accounts.length) { window._wallet_result = 'ERR:rejected'; return; }
+				try { await eth.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: '0x38' }] }); } catch (e) {}
+				window._wallet_result = accounts[0];
 			} catch (e) { window._wallet_result = 'ERR:' + (e.message || 'rejected'); }
 		})();
 	""", true)
@@ -434,12 +439,12 @@ func _poll_wallet(tries: int) -> void:
 	if text.begins_with("ERR:"):
 		_wallet_btn.text = "CONNECT WALLET"
 		if text == "ERR:no_wallet":
-			_show_toast("No wallet found — install Phantom, or play as guest.")
+			_show_toast("No wallet found — install MetaMask, or play as guest.")
 		else:
 			_show_toast("Wallet connection rejected.")
 		return
 	GameSettings.wallet = text
-	var short := text.substr(0, 4) + ".." + text.substr(text.length() - 4)
+	var short := text.substr(0, 6) + ".." + text.substr(text.length() - 4)
 	_name_edit.text = short
 	_wallet_btn.text = "✓ " + short
 	GameSettings.save_settings()
