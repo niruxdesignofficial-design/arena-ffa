@@ -114,6 +114,7 @@ func _ready() -> void:
 	Net.round_time_changed.connect(_on_time)
 	Net.countdown_started.connect(_on_countdown)
 	Net.round_reset.connect(_on_round_reset)
+	Net.cycle_closed.connect(_on_cycle_closed)
 	Net.chat_message.connect(_on_chat)
 	Net.streak_announce.connect(_on_streak)
 	Net.hall_changed.connect(_refresh_hall)
@@ -177,6 +178,11 @@ func _build() -> void:
 	top.offset_right = 220
 	top.alignment = BoxContainer.ALIGNMENT_BEGIN
 	root.add_child(top)
+	# Caption + cuenta regresiva al próximo cierre de podio (siempre visible).
+	var cap := _label(11, Color(0.6, 0.85, 1.0, 0.85))
+	cap.text = "NEXT PODIUM CLOSE"
+	cap.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	top.add_child(cap)
 	_timer_label = _label(30)
 	_timer_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	top.add_child(_timer_label)
@@ -225,6 +231,10 @@ func _build() -> void:
 	_score_grid.add_theme_constant_override("h_separation", 26)
 	_score_grid.add_theme_constant_override("v_separation", 4)
 	sb_box.add_child(_score_grid)
+	var elig_note := _label(13, Color(0.42, 0.92, 0.55, 0.9))
+	elig_note.text = "$ = wallet connected (eligible for payout)  ·  connect wallet to be eligible"
+	elig_note.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	sb_box.add_child(elig_note)
 	_hall_label = _label(14, Color(0.953, 0.729, 0.184, 0.8))
 	_hall_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_hall_label.text = ""
@@ -561,9 +571,14 @@ func _refresh_scores() -> void:
 		var color := Color.WHITE
 		if id == my_id:
 			color = GOLD
+		# Elegible para el snapshot de pago = tiene wallet conectada.
+		var eligible := bool(p.get("eligible", false))
+		if not eligible and id != my_id:
+			color = Color(1, 1, 1, 0.55)
 		var crown := "👑 " if (rank == 1 and int(p["kills"]) > 0) else ""
+		var tag := "$ " if eligible else ""
 		var cells := [
-			"%d. %s%s" % [rank, crown, p["name"]],
+			"%d. %s%s%s" % [rank, tag, crown, p["name"]],
 			CharacterLib.display_name(String(p["character"])),
 			str(int(p["kills"])),
 			str(int(p["deaths"])),
@@ -595,19 +610,43 @@ func set_scoreboard_visible(v: bool) -> void:
 	if v:
 		_refresh_scores()
 
-func _on_round_reset(winner_name: String, winner_kills: int) -> void:
-	# Cierre de ciclo de 30 min: banner con el ganador y dashboard a cero.
-	_countdown.add_theme_font_size_override("font_size", 40)
-	_countdown.text = "ROUND WINNER: %s (%d kills)" % [winner_name, winner_kills]
-	_countdown.modulate.a = 1.0
+func _on_round_reset(_winner_name: String, _winner_kills: int) -> void:
+	# El cierre de ciclo lo muestra _on_cycle_closed (podio completo). Este hook
+	# queda para compatibilidad; sin banner propio para no pisar el podio.
+	pass
+
+## Cierre del ciclo de podio: muestra el podio final unos segundos y luego el
+## aviso de reinicio. El podio ya viene filtrado (solo elegibles con wallet).
+func _on_cycle_closed(n: int, podium: Array) -> void:
 	Sfx.play("go")
+	var lines := ["CYCLE %d CLOSED — PODIUM" % n]
+	if podium.is_empty():
+		lines.append("no eligible players — connect wallet to earn payouts")
+	else:
+		var medals := ["1st", "2nd", "3rd"]
+		for i in podium.size():
+			var w: Dictionary = podium[i]
+			lines.append("%s   %s   —   %d kills" % [medals[i], String(w["name"]), int(w["kills"])])
+	_countdown.add_theme_font_size_override("font_size", 34)
+	_countdown.text = "\n".join(lines)
+	_countdown.modulate.a = 1.0
 	var tw := create_tween()
-	tw.tween_interval(4.0)
-	tw.tween_property(_countdown, "modulate:a", 0.0, 0.6)
+	tw.tween_interval(5.0)
+	tw.tween_property(_countdown, "modulate:a", 0.0, 0.5)
 	tw.tween_callback(func():
-		_countdown.text = ""
+		if not is_instance_valid(_countdown):
+			return
+		_countdown.add_theme_font_size_override("font_size", 28)
+		_countdown.text = "NEW CYCLE STARTED — podium reset. Climb again."
 		_countdown.modulate.a = 1.0
-		_countdown.add_theme_font_size_override("font_size", 84))
+		var tw2 := create_tween()
+		tw2.tween_interval(2.5)
+		tw2.tween_property(_countdown, "modulate:a", 0.0, 0.5)
+		tw2.tween_callback(func():
+			if is_instance_valid(_countdown):
+				_countdown.text = ""
+				_countdown.modulate.a = 1.0
+				_countdown.add_theme_font_size_override("font_size", 84)))
 
 func _on_countdown(seconds: float) -> void:
 	_run_countdown(int(round(seconds)))
